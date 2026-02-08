@@ -120,6 +120,7 @@ func NewServer(
 		judgeCoordinator,
 		s.GetGapDuration(),
 		s.generateAndPostQuestion,
+		cfg.Server.URL,
 	)
 
 	// Create burn manager for nad.fun swap integration

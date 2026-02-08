@@ -3,8 +3,11 @@ package server
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"log"
 	"math/big"
+	"net/http"
 	"os"
 	"strconv"
 	"time"
@@ -18,13 +21,14 @@ import (
 
 // RecoveryService handles state recovery on startup.
 type RecoveryService struct {
-	chainClient       *chain.ChainClient
-	matchManager      *match.Manager
-	timeoutWatcher    *watcher.TimeoutWatcher
-	verificationMgr   *verification.Manager
-	judgeCoordinator  *judge.Coordinator
-	gapDuration       time.Duration
+	chainClient        *chain.ChainClient
+	matchManager       *match.Manager
+	timeoutWatcher     *watcher.TimeoutWatcher
+	verificationMgr    *verification.Manager
+	judgeCoordinator   *judge.Coordinator
+	gapDuration        time.Duration
 	onQuestionGenerate func(ctx context.Context, state *match.State) error
+	serverURL          string
 }
 
 // RecoveryResult holds statistics about the recovery process.
@@ -46,6 +50,7 @@ func NewRecoveryService(
 	judgeCoordinator *judge.Coordinator,
 	gapDuration time.Duration,
 	onQuestionGenerate func(ctx context.Context, state *match.State) error,
+	serverURL string,
 ) *RecoveryService {
 	return &RecoveryService{
 		chainClient:        chainClient,
@@ -55,6 +60,7 @@ func NewRecoveryService(
 		judgeCoordinator:   judgeCoordinator,
 		gapDuration:        gapDuration,
 		onQuestionGenerate: onQuestionGenerate,
+		serverURL:          serverURL,
 	}
 }
 
@@ -78,30 +84,136 @@ func chainPhaseToInternal(chainPhase uint8) match.Phase {
 	}
 }
 
-// RecoverAllState recovers all active matches from the chain on startup.
+// backendMatchResponse mirrors the JSON from GET /api/matches/open and /api/matches/live.
+type backendMatchResponse struct {
+	MatchID int64  `json:"matchId"`
+	Phase   string `json:"phase"`
+}
+
+type backendMatchesEnvelope struct {
+	Matches []backendMatchResponse `json:"matches"`
+}
+
+// fetchActiveMatchIDsFromBackend calls the backend's /api/matches/open and /api/matches/live
+// endpoints and returns the deduplicated set of match IDs that need recovery.
+func (r *RecoveryService) fetchActiveMatchIDsFromBackend(ctx context.Context) ([]int64, error) {
+	if r.serverURL == "" {
+		return nil, fmt.Errorf("no server URL configured")
+	}
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	seen := make(map[int64]bool)
+	var ids []int64
+
+	for _, endpoint := range []string{"/api/matches/open", "/api/matches/live"} {
+		matches, err := func() ([]backendMatchResponse, error) {
+			url := r.serverURL + endpoint
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+			if err != nil {
+				return nil, fmt.Errorf("create request for %s: %w", endpoint, err)
+			}
+
+			resp, err := client.Do(req)
+			if err != nil {
+				return nil, fmt.Errorf("fetch %s: %w", endpoint, err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return nil, fmt.Errorf("%s returned status %d", endpoint, resp.StatusCode)
+			}
+
+			var envelope backendMatchesEnvelope
+			if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+				return nil, fmt.Errorf("decode %s response: %w", endpoint, err)
+			}
+			return envelope.Matches, nil
+		}()
+		if err != nil {
+			return nil, err
+		}
+
+		for _, m := range matches {
+			if !seen[m.MatchID] {
+				seen[m.MatchID] = true
+				ids = append(ids, m.MatchID)
+			}
+		}
+	}
+
+	return ids, nil
+}
+
+// RecoverAllState recovers all active matches on startup.
+// It first tries to ask the backend for active matches (fast path: typically 0-2 matches).
+// If the backend is unreachable, it falls back to scanning the last RECOVERY_LOOKBACK
+// matches on-chain with rate limiting.
 func (r *RecoveryService) RecoverAllState(ctx context.Context) (*RecoveryResult, error) {
 	result := &RecoveryResult{}
 
-	// Get the next match ID to determine range
+	// Fast path: ask the backend for active match IDs
+	activeIDs, err := r.fetchActiveMatchIDsFromBackend(ctx)
+	if err == nil {
+		log.Printf("Recovery: fetched %d active matches from backend", len(activeIDs))
+		for _, id := range activeIDs {
+			matchID := big.NewInt(id)
+			if err := r.recoverMatch(ctx, matchID, result); err != nil {
+				log.Printf("Recovery: failed to recover match %d: %v", id, err)
+			}
+		}
+		r.logResult(result)
+		return result, nil
+	}
+
+	log.Printf("Recovery: backend unreachable (%v), falling back to chain scan", err)
+
+	// Fallback: rate-limited chain scan of recent matches
+	return r.recoverFromChainScan(ctx)
+}
+
+// recoverFromChainScan scans the last RECOVERY_LOOKBACK matches on-chain with rate limiting.
+func (r *RecoveryService) recoverFromChainScan(ctx context.Context) (*RecoveryResult, error) {
+	result := &RecoveryResult{}
+
 	nextID, err := r.chainClient.GetNextMatchID(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	startMatch := int64(1)
+	lookback := int64(20)
+	if v := os.Getenv("RECOVERY_LOOKBACK"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+			lookback = n
+		}
+	}
+
+	// Also support the legacy RECOVERY_START_MATCH for explicit override
+	startMatch := nextID.Int64() - lookback
+	if startMatch < 1 {
+		startMatch = 1
+	}
 	if v := os.Getenv("RECOVERY_START_MATCH"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			startMatch = n
 		}
 	}
 
-	log.Printf("Recovery: scanning matches %d to %s", startMatch, nextID)
+	log.Printf("Recovery: chain scan fallback — scanning matches %d to %d (lookback=%d, rate=10/sec)",
+		startMatch, nextID.Int64()-1, lookback)
 
-	// Iterate through all matches
+	// Rate limiter: 10 requests/sec (100ms between ticks)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
 	for i := startMatch; i < nextID.Int64(); i++ {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		case <-ticker.C:
+		}
+
 		matchID := big.NewInt(i)
 
-		// Get chain state
 		chainState, err := r.chainClient.GetMatchState(ctx, matchID)
 		if err != nil {
 			log.Printf("Recovery: failed to get state for match %d: %v", i, err)
@@ -109,77 +221,93 @@ func (r *RecoveryService) RecoverAllState(ctx context.Context) (*RecoveryResult,
 		}
 
 		phase := chainPhaseToInternal(chainState.Phase)
-
-		// Skip terminal states
 		if match.IsTerminalPhase(phase) {
 			continue
 		}
 
-		result.TotalMatches++
-
-		// Get players
-		players, err := r.chainClient.GetMatchPlayers(ctx, matchID)
-		if err != nil {
-			log.Printf("Recovery: failed to get players for match %d: %v", i, err)
-			players = nil
-		}
-
-		// Create or update match state
-		state, err := r.matchManager.GetMatch(matchID)
-		if err != nil {
-			// Create new state
-			state, err = r.matchManager.CreateMatch(matchID, time.Time{})
-			if err != nil {
-				log.Printf("Recovery: failed to create state for match %d: %v", i, err)
-				continue
-			}
-		}
-
-		// Sync from chain data
-		state.SyncFromChain(
-			chainState.Pool,
-			phase,
-			chainState.AnswerDeadline,
-			chainState.Winner,
-			players,
-		)
-
-		// For queue matches, also get the queue deadline from chain config
-		if phase == match.PhaseQueue {
-			if cfg, err := r.chainClient.GetMatchConfig(ctx, matchID); err == nil && cfg.QueueDeadline > 0 {
-				state.SetQueueDeadline(time.Unix(int64(cfg.QueueDeadline), 0))
-			}
-		}
-
-		// Recover based on current phase
-		switch phase {
-		case match.PhaseQueue:
-			result.QueueMatches++
-			log.Printf("Recovery: match %d is in queue phase (deadline: %s)", i, state.QueueDeadline.Format(time.RFC3339))
-
-		case match.PhaseActive:
-			result.ActiveMatches++
-			if err := r.recoverActivePhase(ctx, matchID, state); err != nil {
-				log.Printf("Recovery: failed to recover active match %d: %v", i, err)
-			} else {
-				result.StuckRecovered++
-			}
-
-		case match.PhaseAnswerPeriod:
-			result.AnswerPeriod++
-			if err := r.recoverAnswerPeriod(ctx, matchID, state, chainState.AnswerDeadline); err != nil {
-				log.Printf("Recovery: failed to recover answer period for match %d: %v", i, err)
-			} else {
-				result.TimersRegistered++
-			}
+		// Non-terminal match found — recover it (additional RPC calls also rate-limited
+		// by the ticker on next iteration)
+		if err := r.recoverMatch(ctx, matchID, result); err != nil {
+			log.Printf("Recovery: failed to recover match %d: %v", i, err)
 		}
 	}
 
+	r.logResult(result)
+	return result, nil
+}
+
+// recoverMatch recovers a single match by its ID from chain state.
+func (r *RecoveryService) recoverMatch(ctx context.Context, matchID *big.Int, result *RecoveryResult) error {
+	chainState, err := r.chainClient.GetMatchState(ctx, matchID)
+	if err != nil {
+		return fmt.Errorf("get match state: %w", err)
+	}
+
+	phase := chainPhaseToInternal(chainState.Phase)
+	if match.IsTerminalPhase(phase) {
+		return nil
+	}
+
+	result.TotalMatches++
+
+	players, err := r.chainClient.GetMatchPlayers(ctx, matchID)
+	if err != nil {
+		log.Printf("Recovery: failed to get players for match %s: %v", matchID, err)
+		players = nil
+	}
+
+	state, err := r.matchManager.GetMatch(matchID)
+	if err != nil {
+		state, err = r.matchManager.CreateMatch(matchID, time.Time{})
+		if err != nil {
+			return fmt.Errorf("create match state: %w", err)
+		}
+	}
+
+	state.SyncFromChain(
+		chainState.Pool,
+		phase,
+		chainState.AnswerDeadline,
+		chainState.Winner,
+		players,
+	)
+
+	if phase == match.PhaseQueue {
+		if cfg, err := r.chainClient.GetMatchConfig(ctx, matchID); err == nil && cfg.QueueDeadline > 0 {
+			state.SetQueueDeadline(time.Unix(int64(cfg.QueueDeadline), 0))
+		}
+	}
+
+	switch phase {
+	case match.PhaseQueue:
+		result.QueueMatches++
+		log.Printf("Recovery: match %s is in queue phase (deadline: %s)", matchID, state.QueueDeadline.Format(time.RFC3339))
+
+	case match.PhaseActive:
+		result.ActiveMatches++
+		if err := r.recoverActivePhase(ctx, matchID, state); err != nil {
+			log.Printf("Recovery: failed to recover active match %s: %v", matchID, err)
+		} else {
+			result.StuckRecovered++
+		}
+
+	case match.PhaseAnswerPeriod:
+		result.AnswerPeriod++
+		if err := r.recoverAnswerPeriod(ctx, matchID, state, chainState.AnswerDeadline); err != nil {
+			log.Printf("Recovery: failed to recover answer period for match %s: %v", matchID, err)
+		} else {
+			result.TimersRegistered++
+		}
+	}
+
+	return nil
+}
+
+// logResult logs the final recovery statistics.
+func (r *RecoveryService) logResult(result *RecoveryResult) {
 	log.Printf("Recovery complete: %d active matches (%d queue, %d active, %d answer period), %d timers registered, %d stuck recovered",
 		result.TotalMatches, result.QueueMatches, result.ActiveMatches, result.AnswerPeriod,
 		result.TimersRegistered, result.StuckRecovered)
-
-	return result, nil
 }
 
 // recoverAnswerPeriod recovers a match in the answer period phase.
