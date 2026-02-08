@@ -238,6 +238,102 @@ func Load(path string) (*Config, error) {
 		cfg.Judges.JudgeEndpoints = splitEndpoints(v)
 	}
 
+	// Chain settings
+	if v := os.Getenv("MAX_GAS_PRICE"); v != "" {
+		cfg.Chain.MaxGasPrice = v
+	}
+	if v := os.Getenv("GAS_LIMIT_BUFFER"); v != "" {
+		if n, err := strconv.ParseUint(v, 10, 64); err == nil {
+			cfg.Chain.GasLimitBuffer = n
+		}
+	}
+	if v := os.Getenv("TX_RETRY_COUNT"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Chain.TxRetryCount = n
+		}
+	}
+	if v := os.Getenv("TX_RETRY_INTERVAL_MS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Chain.TxRetryIntervalMs = n
+		}
+	}
+
+	// Match settings
+	if v := os.Getenv("ENTRY_FEE"); v != "" {
+		cfg.Match.EntryFee = v
+	}
+	if v := os.Getenv("BASE_ANSWER_FEE"); v != "" {
+		cfg.Match.BaseAnswerFee = v
+	}
+	if v := os.Getenv("QUEUE_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Match.QueueDuration = d
+		}
+	}
+	if v := os.Getenv("ANSWER_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Match.AnswerDuration = d
+		}
+	}
+	if v := os.Getenv("GAP_DURATION"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Match.GapDuration = d
+		}
+	}
+	if v := os.Getenv("MIN_PLAYERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Match.MinPlayers = uint8(n)
+		}
+	}
+	if v := os.Getenv("MAX_PLAYERS"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Match.MaxPlayers = uint8(n)
+		}
+	}
+	if v := os.Getenv("AUTO_CREATE"); v != "" {
+		cfg.Match.AutoCreate = v == "true" || v == "1"
+	}
+	if v := os.Getenv("MATCH_COOLDOWN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Match.Cooldown = d
+		}
+	}
+	if v := os.Getenv("REGISTRATION_GRACE"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Match.RegistrationGrace = d
+		}
+	}
+
+	// Watcher settings
+	if v := os.Getenv("STALE_THRESHOLD"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Watcher.StaleThreshold = d
+		}
+	}
+	if v := os.Getenv("STALE_CHECK_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Watcher.StaleCheckInterval = d
+		}
+	}
+	if v := os.Getenv("TIMEOUT_CHECK_INTERVAL"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Watcher.TimeoutCheckInterval = d
+		}
+	}
+	if v := os.Getenv("DIRECT_CHAIN_POLLING"); v != "" {
+		cfg.Watcher.DirectChainPolling = v == "true" || v == "1"
+	}
+
+	// nad.fun settings
+	if v := os.Getenv("BURN_SWAP_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.NadFun.BurnSwapRetries = n
+		}
+	}
+	if v := os.Getenv("TREASURY_FALLBACK"); v != "" {
+		cfg.NadFun.TreasuryFallback = v == "true" || v == "1"
+	}
+
 	return cfg, nil
 }
 

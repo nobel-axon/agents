@@ -599,7 +599,12 @@ func (s *Server) onStaleQueue(ctx context.Context, matchID *big.Int, action watc
 			log.Printf("Match %s: skipping stale cancel (already in phase %d)", matchID, state.Phase)
 			return nil
 		}
-		log.Printf("Cancelling stale match %s", matchID)
+		// Capture player count before cancel
+		playerCount := 0
+		if state, err := s.matchManager.GetMatch(matchID); err == nil {
+			playerCount = state.PlayerCount
+		}
+		log.Printf("Cancelling stale match %s (%d players)", matchID, playerCount)
 		if err := s.chainClient.CancelMatch(ctx, matchID); err != nil {
 			return err
 		}
@@ -607,14 +612,18 @@ func (s *Server) onStaleQueue(ctx context.Context, matchID *big.Int, action watc
 			state.SetPhase(match.PhaseCancelled)
 		}
 
-		// Create next match
-		if s.cfg.Match.AutoCreate {
+		// Only auto-create if there were players (they deserve a fresh match).
+		// If 0 players, don't waste gas — next match created on server restart
+		// or after a real match completes.
+		if s.cfg.Match.AutoCreate && playerCount > 0 {
 			go func() {
 				time.Sleep(s.cfg.Match.Cooldown)
 				if err := s.CreateNextMatch(context.Background()); err != nil {
 					log.Printf("Failed to create next match: %v", err)
 				}
 			}()
+		} else if s.cfg.Match.AutoCreate {
+			log.Println("Stale match had 0 players — skipping auto-create (waiting for activity)")
 		}
 
 	case watcher.ActionStartMatch:
