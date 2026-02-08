@@ -34,15 +34,17 @@ func NewReporter(serverURL, secret string) *Reporter {
 
 // MatchUpdateRequest is the request for flexible match field updates.
 type MatchUpdateRequest struct {
-	MatchID      int64  `json:"matchId"`
-	Phase        string `json:"phase,omitempty"`
-	QuestionText string `json:"questionText,omitempty"`
-	Category     string `json:"category,omitempty"`
-	Difficulty   int    `json:"difficulty,omitempty"`
-	FormatHint   string `json:"formatHint,omitempty"`
-	AnswerHash   string `json:"answerHash,omitempty"`
-	EntryFee     string `json:"entryFee,omitempty"`
-	AnswerFee    string `json:"answerFee,omitempty"`
+	MatchID         int64  `json:"matchId"`
+	Phase           string `json:"phase,omitempty"`
+	QuestionText    string `json:"questionText,omitempty"`
+	Category        string `json:"category,omitempty"`
+	Difficulty      int    `json:"difficulty,omitempty"`
+	FormatHint      string `json:"formatHint,omitempty"`
+	AnswerHash      string `json:"answerHash,omitempty"`
+	EntryFee        string `json:"entryFee,omitempty"`
+	AnswerFee       string `json:"answerFee,omitempty"`
+	RegistrationEnd string `json:"registrationEnd,omitempty"`
+	AnswerTimeout   string `json:"answerTimeout,omitempty"`
 }
 
 // AnswerResultRequest is the request for recording answer evaluation results.

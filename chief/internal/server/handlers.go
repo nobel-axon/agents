@@ -764,14 +764,10 @@ func (s *Server) handleGapElapsed(matchID *big.Int) {
 		return
 	}
 
-	// Get deadline from chain
-	chainState, err := s.chainClient.GetMatchState(ctx, matchID)
-	if err != nil {
-		log.Printf("Match %s: failed to get chain state after starting answer period: %v", matchID, err)
-		return
-	}
-
-	deadline := time.Unix(int64(chainState.AnswerDeadline), 0)
+	// Compute deadline locally from config — reading chain state immediately after TX
+	// confirmation can return stale data due to RPC node sync lag (answerDeadline=0).
+	cfg := s.matchManager.GetConfig()
+	deadline := time.Now().Add(cfg.AnswerDuration)
 	state.SetAnswerDeadline(deadline)
 	state.SetPhase(match.PhaseAnswerPeriod)
 

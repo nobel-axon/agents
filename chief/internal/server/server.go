@@ -295,10 +295,11 @@ func (s *Server) CreateNextMatch(ctx context.Context) error {
 	// Report new match to server
 	if s.reporter != nil {
 		go s.reporter.ReportMatchUpdate(context.Background(), reporter.MatchUpdateRequest{
-			MatchID:   matchID.Int64(),
-			Phase:     "registration",
-			EntryFee:  cfg.EntryFee.String(),
-			AnswerFee: cfg.BaseAnswerFee.String(),
+			MatchID:         matchID.Int64(),
+			Phase:           "registration",
+			EntryFee:        cfg.EntryFee.String(),
+			AnswerFee:       cfg.BaseAnswerFee.String(),
+			RegistrationEnd: queueDeadline.UTC().Format(time.RFC3339),
 		})
 	}
 
