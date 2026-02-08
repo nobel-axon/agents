@@ -1,0 +1,110 @@
+services:
+  philosopher:
+    build: .
+    container_name: axon-philosopher
+    environment:
+      - AGENT_ROLE=philosopher
+      - AGENT_ID=philosopher
+      - PRIMARY_LLM=kimi
+      - PORT=9001
+      - GLM_API_KEY=${GLM_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - LLM_QUESTIONS_ENABLED=true
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9001/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  director:
+    build: .
+    container_name: axon-director
+    environment:
+      - AGENT_ROLE=director
+      - AGENT_ID=director
+      - PRIMARY_LLM=kimi
+      - PORT=9002
+      - GLM_API_KEY=${GLM_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    ports:
+      - "9002:9002"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9002/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  judge-1:
+    build: .
+    container_name: axon-judge-1
+    environment:
+      - AGENT_ROLE=judge
+      - AGENT_ID=judge-1
+      - PRIMARY_LLM=kimi
+      - PORT=9003
+      - GLM_API_KEY=${GLM_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    ports:
+      - "9003:9003"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9003/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  judge-2:
+    build: .
+    container_name: axon-judge-2
+    environment:
+      - AGENT_ROLE=judge
+      - AGENT_ID=judge-2
+      - PRIMARY_LLM=kimi
+      - PORT=9004
+      - GLM_API_KEY=${GLM_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    ports:
+      - "9004:9004"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9004/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+  judge-3:
+    build: .
+    container_name: axon-judge-3
+    environment:
+      - AGENT_ROLE=judge
+      - AGENT_ID=judge-3
+      - PRIMARY_LLM=kimi
+      - PORT=9005
+      - GLM_API_KEY=${GLM_API_KEY}
+      - KIMI_API_KEY=${KIMI_API_KEY}
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+    ports:
+      - "9005:9005"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9005/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 10s
+
+networks:
+  default:
+    name: axon-network

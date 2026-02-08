@@ -1,0 +1,21 @@
+# Secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Go binaries
+chief/axon-chief
+agent/axon-agent
+
+# OS
+.DS_Store
+
+# IDE
+.idea/
+.vscode/
+*.sw?
+
+# Logs
+*.log
+logs/

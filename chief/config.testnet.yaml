@@ -1,0 +1,54 @@
+# axon-chief testnet configuration
+port: "9100"
+adminPort: "9101"
+
+chain:
+  rpcUrl: "https://testnet-rpc.monad.xyz"
+  chainId: 10143
+  # operatorKey loaded from OPERATOR_PRIVATE_KEY env var
+  arenaAddress: "0x0290672D823aB020EfD2e0aE97Ef944829Ccb02D"
+  neuronAddress: "0xbA94268929d9dA2075B6B567C06033564C460355"
+  gasLimitBuffer: 50000
+  maxGasPrice: "200000000000"  # 200 gwei for testnet
+  txRetryCount: 5
+  txRetryIntervalMs: 2000
+
+judges:
+  # Role-specific agent endpoints
+  philosopherEndpoint: "http://localhost:9001"
+  directorEndpoint: "http://localhost:9002"
+  judgeEndpoints:
+    - "http://localhost:9003"
+    - "http://localhost:9004"
+    - "http://localhost:9005"
+  timeoutMs: 30000
+  consensusThreshold: 2
+  retryCount: 3
+
+match:
+  entryFee: "100000000000000000"      # 0.1 MON
+  baseAnswerFee: "1000000000000000000" # 1 NEURON
+  queueDuration: 1h      # Long queue — match starts on minPlayers join, not timeout
+  answerDuration: 3m
+  gapDuration: 15s  # Time for reveal phase (question + judges visible)
+  minPlayers: 2
+  maxPlayers: 10
+  autoCreate: true  # Auto-create for E2E testing
+  cooldown: 5s      # Fast match creation after completion
+  registrationGrace: 30s  # Grace period after minPlayers reached to allow more players
+
+watcher:
+  timeoutCheckInterval: 10s
+  staleCheckInterval: 30s
+  staleThreshold: 30s
+  eventPollInterval: 500ms
+  ponderHealthThreshold: 30s
+  ponderLagBlocks: 10
+  directChainPolling: false  # Disabled — events come via Ponder (axon-server POST /event)
+
+# adminToken loaded from ADMIN_TOKEN env var
+
+nadFun:
+  # Monad testnet doesn't have nad.fun - treasury fallback only
+  treasuryFallback: true
+  burnSwapRetries: 0  # Skip swap attempts on testnet
