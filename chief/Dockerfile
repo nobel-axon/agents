@@ -25,9 +25,7 @@ WORKDIR /app
 COPY --from=builder /axon-chief /app/axon-chief
 
 # Environment variables (to be overridden)
-ENV PORT=9100 \
-    MONAD_RPC_URL=https://testnet.monad.xyz \
-    CHAIN_ID=10143
+ENV PORT=9100
 
 EXPOSE 9100
 
