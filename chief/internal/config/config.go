@@ -90,7 +90,6 @@ type WatcherConfig struct {
 	PonderHealthThreshold  time.Duration `yaml:"ponderHealthThreshold"`
 	PonderLagBlocks        int           `yaml:"ponderLagBlocks"`
 	DirectChainPolling     bool          `yaml:"directChainPolling"`     // Enable direct eth_getLogs polling (default false, use Ponder)
-	IdleCommentaryInterval time.Duration `yaml:"idleCommentaryInterval"` // Interval for idle ambient commentary (default 45s)
 }
 
 // NadFunConfig holds nad.fun swap integration settings.
@@ -151,7 +150,6 @@ func Default() *Config {
 			EventPollInterval:      500 * time.Millisecond,
 			PonderHealthThreshold:  30 * time.Second,
 			PonderLagBlocks:        10,
-			IdleCommentaryInterval: 45 * time.Second,
 		},
 		AdminToken: "",
 		Server: ServerConfig{
@@ -324,11 +322,6 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("DIRECT_CHAIN_POLLING"); v != "" {
 		cfg.Watcher.DirectChainPolling = v == "true" || v == "1"
-	}
-	if v := os.Getenv("IDLE_COMMENTARY_INTERVAL"); v != "" {
-		if d, err := time.ParseDuration(v); err == nil {
-			cfg.Watcher.IdleCommentaryInterval = d
-		}
 	}
 
 	// nad.fun settings

@@ -170,11 +170,6 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start health check loop
 	go s.healthCheckLoop(ctx)
 
-	// Start idle commentary loop
-	if s.cfg.Watcher.IdleCommentaryInterval > 0 {
-		go s.idleCommentaryLoop(ctx)
-	}
-
 	// Auto-create first match if enabled
 	if s.cfg.Match.AutoCreate {
 		go func() {
@@ -254,87 +249,6 @@ func (s *Server) healthCheckLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.judgeCoordinator.CheckHealth(ctx)
-		}
-	}
-}
-
-// idleCommentaryMessages are broadcast during idle periods to keep the live feed chatty.
-var idleCommentaryMessages = []string{
-	"The arena stands empty... perhaps the challengers are still gathering their courage.",
-	"A tumbleweed rolls across the arena floor. Any takers?",
-	"The judges grow restless. They haven't had a good debate in a while.",
-	"The arena awaits its next challenger. Will you be the one to step forward?",
-	"Rumor has it the last champion won by a single NEURON. The stakes have never been higher.",
-	"The philosophers sharpen their wit. The arena hungers for fresh minds.",
-	"A hush falls over the arena. Who will break the silence?",
-	"The question board gathers dust. Surely someone out there has the answer...",
-	"Even the wisest judges need someone to judge. Step into the arena.",
-	"The NEURON burns low. The arena craves fresh intellect.",
-	"Somewhere, a genius is hesitating. Don't think. Enter.",
-	"The last match was legendary. Can the next one top it?",
-	"The arena's torches flicker impatiently. They burn for battle.",
-	"Fun fact: fortune favors the bold. And the arena favors the brilliant.",
-}
-
-// idleCommentaryLoop periodically broadcasts ambient commentary when the arena is idle.
-func (s *Server) idleCommentaryLoop(ctx context.Context) {
-	interval := s.cfg.Watcher.IdleCommentaryInterval
-	if interval <= 0 {
-		interval = 45 * time.Second
-	}
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-
-	msgIdx := 0
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-s.shutdownCh:
-			return
-		case <-ticker.C:
-			// Only send idle commentary when arena is idle:
-			// - no active matches, OR only matches in Queue phase (waiting for players)
-			active := s.matchManager.GetActiveMatches()
-			idle := true
-			for _, m := range active {
-				phase := m.GetPhase()
-				if phase != match.PhaseQueue {
-					idle = false
-					break
-				}
-			}
-			if !idle {
-				continue
-			}
-
-			if s.reporter == nil {
-				continue
-			}
-
-			// Pick message (round-robin to avoid repeats)
-			msg := idleCommentaryMessages[msgIdx%len(idleCommentaryMessages)]
-			msgIdx++
-
-			// Try judge LLM commentary first, fall back to static
-			if resp, err := s.judgeCoordinator.RequestCommentary(ctx, &judge.CommentaryRequest{
-				EventType: "idle_ambient",
-			}); err == nil && resp.Commentary != "" {
-				msg = resp.Commentary
-			}
-
-			// Use matchID 0 for idle commentary (no specific match)
-			var matchID int64
-			if len(active) > 0 {
-				matchID = active[0].ID.Int64()
-			}
-
-			go s.reporter.ReportCommentary(context.Background(), reporter.CommentaryRequest{
-				MatchID:   matchID,
-				AgentID:   "system",
-				EventType: "idle_ambient",
-				Text:      msg,
-			})
 		}
 	}
 }
