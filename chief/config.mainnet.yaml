@@ -1,15 +1,15 @@
-# axon-chief testnet configuration
+# axon-chief mainnet configuration
 port: "9100"
 adminPort: "9101"
 
 chain:
-  rpcUrl: "https://testnet-rpc.monad.xyz"
-  chainId: 10143
+  # rpcUrl loaded from MONAD_RPC_URL env var
+  chainId: 143
   # operatorKey loaded from OPERATOR_PRIVATE_KEY env var
   arenaAddress: "0xf7Bc6B95d39f527d351BF5afE6045Db932f37171"
   neuronAddress: "0xDa2A083164f58BaFa8bB8E117dA9d4D1E7e67777"
   gasLimitBuffer: 50000
-  maxGasPrice: "200000000000"  # 200 gwei for testnet
+  maxGasPrice: "100000000000"  # 100 gwei for mainnet
   txRetryCount: 5
   txRetryIntervalMs: 2000
 
@@ -33,8 +33,8 @@ match:
   gapDuration: 15s  # Time for reveal phase (question + judges visible)
   minPlayers: 2
   maxPlayers: 10
-  autoCreate: true  # Auto-create for E2E testing
-  cooldown: 5s      # Fast match creation after completion
+  autoCreate: true
+  cooldown: 30s     # Production cooldown between matches
   registrationGrace: 30s  # Grace period after minPlayers reached to allow more players
 
 watcher:
@@ -49,6 +49,6 @@ watcher:
 # adminToken loaded from ADMIN_TOKEN env var
 
 nadFun:
-  # Monad testnet doesn't have nad.fun - treasury fallback only
-  treasuryFallback: true
-  burnSwapRetries: 0  # Skip swap attempts on testnet
+  # Monad mainnet has nad.fun — enable real swaps
+  treasuryFallback: false
+  burnSwapRetries: 3
