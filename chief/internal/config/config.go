@@ -205,6 +205,10 @@ func Load(path string) (*Config, error) {
 		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
 			cfg.Chain.ChainID = id
 		}
+	} else if v := os.Getenv("MONAD_CHAIN_ID"); v != "" {
+		if id, err := strconv.ParseInt(v, 10, 64); err == nil {
+			cfg.Chain.ChainID = id
+		}
 	}
 	if v := os.Getenv("OPERATOR_PRIVATE_KEY"); v != "" {
 		cfg.Chain.OperatorKey = v
