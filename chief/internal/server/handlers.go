@@ -775,6 +775,16 @@ func (s *Server) handleGapElapsed(matchID *big.Int) {
 	s.timeoutWatcher.RegisterMatch(matchID, deadline)
 
 	log.Printf("Match %s: answer period started, deadline %v", matchID, deadline)
+
+	// Announce answer period via commentary
+	if s.reporter != nil {
+		go s.reporter.ReportCommentary(context.Background(), reporter.CommentaryRequest{
+			MatchID:   matchID.Int64(),
+			AgentID:   "system",
+			EventType: "answer_period_started",
+			Text:      "The arena is open for answers. Challengers, state your case.",
+		})
+	}
 }
 
 // handleQuestionPosted is called when a question is posted to chain.
