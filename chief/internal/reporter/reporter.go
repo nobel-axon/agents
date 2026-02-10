@@ -63,10 +63,11 @@ type AnswerResultRequest struct {
 
 // SettleMatchRequest is the request for settlement reporting.
 type SettleMatchRequest struct {
-	MatchID     int64  `json:"matchId"`
-	WinnerAddr  string `json:"winnerAddr"`
-	PrizeMON    string `json:"prizeMon"`
-	PrizeNeuron string `json:"prizeNeuron"`
+	MatchID      int64  `json:"matchId"`
+	WinnerAddr   string `json:"winnerAddr"`
+	PrizeMON     string `json:"prizeMon"`
+	PrizeNeuron  string `json:"prizeNeuron"`
+	SettleTxHash string `json:"settleTxHash,omitempty"`
 }
 
 // CommentaryRequest is the request for posting commentary.

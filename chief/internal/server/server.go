@@ -311,8 +311,23 @@ func (s *Server) onSettleMatch(ctx context.Context, matchID *big.Int, winner com
 	// Cancel timeout
 	s.timeoutWatcher.CancelMatch(matchID)
 
+	// Read pool from chain BEFORE settling (settlement distributes funds, zeroing the pool)
+	prizeMON := "0"
+	if chainState, err := s.chainClient.GetMatchState(ctx, matchID); err == nil && chainState.Pool != nil && chainState.Pool.Sign() > 0 {
+		// 90% of pool goes to winner (contract enforced)
+		prize := new(big.Int).Mul(chainState.Pool, big.NewInt(90))
+		prize.Div(prize, big.NewInt(100))
+		prizeMON = prize.String()
+		log.Printf("Match %s: pool=%s, prize=%s (90%%)", matchID, chainState.Pool, prizeMON)
+	} else if err != nil {
+		log.Printf("Match %s: failed to read pool from chain for prize calculation: %v", matchID, err)
+	} else {
+		log.Printf("Match %s: WARNING pool is zero/nil before settlement", matchID)
+	}
+
 	// Settle on chain
-	if err := s.chainClient.SettleWinner(ctx, matchID, winner); err != nil {
+	settleTxHash, err := s.chainClient.SettleWinner(ctx, matchID, winner)
+	if err != nil {
 		return err
 	}
 
@@ -322,22 +337,13 @@ func (s *Server) onSettleMatch(ctx context.Context, matchID *big.Int, winner com
 		state.SetWinner(winner)
 	}
 
-	// Report settlement to server (winner gets ~90% of pool)
+	// Report settlement to server
 	if s.reporter != nil {
-		prizeMON := "0"
-		// Read pool from chain (authoritative source) — in-memory Pool is not populated by join events
-		if chainState, err := s.chainClient.GetMatchState(ctx, matchID); err == nil && chainState.Pool != nil && chainState.Pool.Sign() > 0 {
-			// 90% of pool goes to winner (contract enforced)
-			prize := new(big.Int).Mul(chainState.Pool, big.NewInt(90))
-			prize.Div(prize, big.NewInt(100))
-			prizeMON = prize.String()
-		} else if err != nil {
-			log.Printf("Match %s: failed to read pool from chain for prize calculation: %v", matchID, err)
-		}
 		go s.reporter.ReportSettlement(context.Background(), reporter.SettleMatchRequest{
-			MatchID:    matchID.Int64(),
-			WinnerAddr: winner.Hex(),
-			PrizeMON:   prizeMON,
+			MatchID:      matchID.Int64(),
+			WinnerAddr:   winner.Hex(),
+			PrizeMON:     prizeMON,
+			SettleTxHash: settleTxHash,
 		})
 	}
 
@@ -419,26 +425,30 @@ func (s *Server) onMatchTimeout(ctx context.Context, matchID *big.Int) error {
 		if winner != (common.Address{}) && score > 0 {
 			log.Printf("Match %s: settling with winner %s (score: %d)", matchID, winner.Hex(), score)
 
+			// Read pool BEFORE settling (settlement distributes funds, zeroing the pool)
+			prizeMON := "0"
+			if chainState, err := s.chainClient.GetMatchState(ctx, matchID); err == nil && chainState.Pool != nil && chainState.Pool.Sign() > 0 {
+				prize := new(big.Int).Mul(chainState.Pool, big.NewInt(90))
+				prize.Div(prize, big.NewInt(100))
+				prizeMON = prize.String()
+			}
+
 			// Settle on chain
-			if err := s.chainClient.SettleWinner(ctx, matchID, winner); err != nil {
+			settleTxHash, err := s.chainClient.SettleWinner(ctx, matchID, winner)
+			if err != nil {
 				return err
 			}
 
 			state.SetPhase(match.PhaseSettled)
 			state.SetWinner(winner)
 
-			// Report settlement to server (winner gets ~90% of pool)
+			// Report settlement to server
 			if s.reporter != nil {
-				prizeMON := "0"
-				if state.Pool != nil && state.Pool.Sign() > 0 {
-					prize := new(big.Int).Mul(state.Pool, big.NewInt(90))
-					prize.Div(prize, big.NewInt(100))
-					prizeMON = prize.String()
-				}
 				go s.reporter.ReportSettlement(context.Background(), reporter.SettleMatchRequest{
-					MatchID:    matchID.Int64(),
-					WinnerAddr: winner.Hex(),
-					PrizeMON:   prizeMON,
+					MatchID:      matchID.Int64(),
+					WinnerAddr:   winner.Hex(),
+					PrizeMON:     prizeMON,
+					SettleTxHash: settleTxHash,
 				})
 			}
 
@@ -461,25 +471,29 @@ func (s *Server) onMatchTimeout(ctx context.Context, matchID *big.Int) error {
 	if first, ok := s.verificationMgr.GetFirstSubmitter(matchID); ok {
 		log.Printf("Match %s: no personalities, settling with first submitter %s", matchID, first.Agent.Hex())
 
-		if err := s.chainClient.SettleWinner(ctx, matchID, first.Agent); err != nil {
+		// Read pool BEFORE settling
+		prizeMON := "0"
+		if chainState, err := s.chainClient.GetMatchState(ctx, matchID); err == nil && chainState.Pool != nil && chainState.Pool.Sign() > 0 {
+			prize := new(big.Int).Mul(chainState.Pool, big.NewInt(90))
+			prize.Div(prize, big.NewInt(100))
+			prizeMON = prize.String()
+		}
+
+		settleTxHash, err := s.chainClient.SettleWinner(ctx, matchID, first.Agent)
+		if err != nil {
 			return err
 		}
 
 		state.SetPhase(match.PhaseSettled)
 		state.SetWinner(first.Agent)
 
-		// Report settlement to server (winner gets ~90% of pool)
+		// Report settlement to server
 		if s.reporter != nil {
-			prizeMON := "0"
-			if state.Pool != nil && state.Pool.Sign() > 0 {
-				prize := new(big.Int).Mul(state.Pool, big.NewInt(90))
-				prize.Div(prize, big.NewInt(100))
-				prizeMON = prize.String()
-			}
 			go s.reporter.ReportSettlement(context.Background(), reporter.SettleMatchRequest{
-				MatchID:    matchID.Int64(),
-				WinnerAddr: first.Agent.Hex(),
-				PrizeMON:   prizeMON,
+				MatchID:      matchID.Int64(),
+				WinnerAddr:   first.Agent.Hex(),
+				PrizeMON:     prizeMON,
+				SettleTxHash: settleTxHash,
 			})
 		}
 

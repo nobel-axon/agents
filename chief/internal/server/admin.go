@@ -105,7 +105,7 @@ func (s *Server) handleAdminSettle(c *gin.Context) {
 	s.timeoutWatcher.CancelMatch(bigMatchID)
 
 	// Settle on chain
-	if err := s.chainClient.SettleWinner(ctx, bigMatchID, winner); err != nil {
+	if _, err := s.chainClient.SettleWinner(ctx, bigMatchID, winner); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

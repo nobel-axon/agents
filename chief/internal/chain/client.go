@@ -242,16 +242,16 @@ func (c *ChainClient) StartAnswerPeriod(ctx context.Context, matchID *big.Int) e
 	return nil
 }
 
-// SettleWinner settles a match with the given winner.
-func (c *ChainClient) SettleWinner(ctx context.Context, matchID *big.Int, winner common.Address) error {
+// SettleWinner settles a match with the given winner. Returns the TX hash.
+func (c *ChainClient) SettleWinner(ctx context.Context, matchID *big.Int, winner common.Address) (string, error) {
 	label := fmt.Sprintf("Match %s: settleWinner(%s)", matchID, winner.Hex()[:10])
-	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+	tx, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
 		return c.arena.SettleWinner(opts, matchID, winner)
 	})
 	if err != nil {
-		return fmt.Errorf("failed to settle winner: %w", err)
+		return "", fmt.Errorf("failed to settle winner: %w", err)
 	}
-	return nil
+	return tx.Hash().Hex(), nil
 }
 
 // RevealAnswer reveals the answer for a match.
