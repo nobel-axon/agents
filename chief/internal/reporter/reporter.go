@@ -153,6 +153,20 @@ func (r *Reporter) ReportAnswerSubmitted(ctx context.Context, req AnswerSubmitte
 	return r.post(ctx, "/internal/answer-submitted", req)
 }
 
+// ReputationUpdateRequest is the request for reporting reputation updates.
+type ReputationUpdateRequest struct {
+	AgentAddr string `json:"agentAddr"`
+	Score     int    `json:"score"`
+}
+
+// ReportReputationUpdate sends a reputation update to the server.
+func (r *Reporter) ReportReputationUpdate(ctx context.Context, agentAddr string, score int) error {
+	return r.post(ctx, "/internal/reputation-updated", ReputationUpdateRequest{
+		AgentAddr: agentAddr,
+		Score:     score,
+	})
+}
+
 const maxRetries = 3
 
 // post is the shared HTTP POST helper with retry logic.

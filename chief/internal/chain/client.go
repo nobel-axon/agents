@@ -45,6 +45,13 @@ type ChainClient struct {
 	bondingRouter  *bindings.NadFunRouter
 	dexRouter      *bindings.NadFunRouter
 	treasuryAddr   common.Address
+
+	// ERC-8004 reputation contracts (optional, V2)
+	identityRegistry   *bindings.IdentityRegistry
+	reputationRegistry *bindings.ReputationRegistry
+
+	// BountyArena contract (optional, V2)
+	bountyArena *bindings.BountyArena
 }
 
 // NewChainClient creates a new chain client.
@@ -89,7 +96,7 @@ func NewChainClient(cfg *config.ChainConfig) (*ChainClient, error) {
 	// Create nonce manager
 	nonceManager := NewNonceManager(client, address)
 
-	return &ChainClient{
+	cc := &ChainClient{
 		client:       client,
 		arena:        arena,
 		neuron:       neuron,
@@ -98,7 +105,43 @@ func NewChainClient(cfg *config.ChainConfig) (*ChainClient, error) {
 		chainID:      chainID,
 		nonceManager: nonceManager,
 		cfg:          cfg,
-	}, nil
+	}
+
+	// Initialize ERC-8004 reputation contracts (optional — don't fail if not configured)
+	if cfg.IdentityRegistryAddress != "" {
+		idAddr := common.HexToAddress(cfg.IdentityRegistryAddress)
+		idReg, err := bindings.NewIdentityRegistry(idAddr, client)
+		if err != nil {
+			log.Printf("Warning: failed to create IdentityRegistry binding: %v", err)
+		} else {
+			cc.identityRegistry = idReg
+			log.Printf("IdentityRegistry initialized at %s", cfg.IdentityRegistryAddress)
+		}
+	}
+	if cfg.ReputationRegistryAddress != "" {
+		repAddr := common.HexToAddress(cfg.ReputationRegistryAddress)
+		repReg, err := bindings.NewReputationRegistry(repAddr, client)
+		if err != nil {
+			log.Printf("Warning: failed to create ReputationRegistry binding: %v", err)
+		} else {
+			cc.reputationRegistry = repReg
+			log.Printf("ReputationRegistry initialized at %s", cfg.ReputationRegistryAddress)
+		}
+	}
+
+	// Initialize BountyArena contract (optional)
+	if cfg.BountyArenaAddress != "" {
+		bountyAddr := common.HexToAddress(cfg.BountyArenaAddress)
+		bounty, err := bindings.NewBountyArena(bountyAddr, client)
+		if err != nil {
+			log.Printf("Warning: failed to create BountyArena binding: %v", err)
+		} else {
+			cc.bountyArena = bounty
+			log.Printf("BountyArena initialized at %s", cfg.BountyArenaAddress)
+		}
+	}
+
+	return cc, nil
 }
 
 // Address returns the operator address.
@@ -690,6 +733,128 @@ func (c *ChainClient) SendToTreasury(ctx context.Context, amount *big.Int) error
 
 	c.nonceManager.IncrementNonce()
 	log.Printf("Sent %s MON to treasury %s", amount, c.treasuryAddr.Hex())
+	return nil
+}
+
+// --- ERC-8004 Reputation Methods ---
+
+// HasReputationContracts returns true if ERC-8004 contracts are configured.
+func (c *ChainClient) HasReputationContracts() bool {
+	return c.identityRegistry != nil && c.reputationRegistry != nil
+}
+
+// RegisterAgent registers the operator as an agent in the IdentityRegistry.
+func (c *ChainClient) RegisterAgent(ctx context.Context, agentURI string) error {
+	if c.identityRegistry == nil {
+		return errors.New("IdentityRegistry not configured")
+	}
+	label := fmt.Sprintf("register(%s)", agentURI)
+	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.identityRegistry.Register(opts, agentURI)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to register agent: %w", err)
+	}
+	return nil
+}
+
+// OwnerOf returns the owner address for a given agent ID.
+func (c *ChainClient) OwnerOf(ctx context.Context, agentId *big.Int) (common.Address, error) {
+	if c.identityRegistry == nil {
+		return common.Address{}, errors.New("IdentityRegistry not configured")
+	}
+	return c.identityRegistry.OwnerOf(&bind.CallOpts{Context: ctx}, agentId)
+}
+
+// GetAgentWallet returns the wallet address for a given agent ID.
+func (c *ChainClient) GetAgentWallet(ctx context.Context, agentId *big.Int) (common.Address, error) {
+	if c.identityRegistry == nil {
+		return common.Address{}, errors.New("IdentityRegistry not configured")
+	}
+	return c.identityRegistry.GetAgentWallet(&bind.CallOpts{Context: ctx}, agentId)
+}
+
+// GiveFeedback submits reputation feedback for an agent.
+func (c *ChainClient) GiveFeedback(ctx context.Context, agentId *big.Int, value *big.Int, valueDecimals uint8, tag1, tag2, endpoint, feedbackURI string, feedbackHash [32]byte) error {
+	if c.reputationRegistry == nil {
+		return errors.New("ReputationRegistry not configured")
+	}
+	label := fmt.Sprintf("giveFeedback(agent=%s, value=%s)", agentId, value)
+	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.reputationRegistry.GiveFeedback(opts, agentId, value, valueDecimals, tag1, tag2, endpoint, feedbackURI, feedbackHash)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to give feedback: %w", err)
+	}
+	return nil
+}
+
+// GetSummary returns the reputation summary for an agent.
+func (c *ChainClient) GetSummary(ctx context.Context, agentId *big.Int, clientAddresses []common.Address, tag1, tag2 string) (bindings.ReputationData, error) {
+	if c.reputationRegistry == nil {
+		return bindings.ReputationData{}, errors.New("ReputationRegistry not configured")
+	}
+	count, summaryValue, summaryValueDecimals, err := c.reputationRegistry.GetSummary(&bind.CallOpts{Context: ctx}, agentId, clientAddresses, tag1, tag2)
+	if err != nil {
+		return bindings.ReputationData{}, err
+	}
+	return bindings.ReputationData{
+		Count:                count,
+		SummaryValue:         summaryValue,
+		SummaryValueDecimals: summaryValueDecimals,
+	}, nil
+}
+
+// --- BountyArena Methods ---
+
+// HasBountyArena returns true if the BountyArena contract is configured.
+func (c *ChainClient) HasBountyArena() bool {
+	return c.bountyArena != nil
+}
+
+// GetBountyState returns the on-chain state of a bounty.
+func (c *ChainClient) GetBountyState(ctx context.Context, bountyID *big.Int) (bindings.BountyState, error) {
+	if c.bountyArena == nil {
+		return bindings.BountyState{}, errors.New("BountyArena not configured")
+	}
+	return c.bountyArena.GetBountyState(&bind.CallOpts{Context: ctx}, bountyID)
+}
+
+// GetBountyPlayers returns the players in a bounty.
+func (c *ChainClient) GetBountyPlayers(ctx context.Context, bountyID *big.Int) ([]common.Address, error) {
+	if c.bountyArena == nil {
+		return nil, errors.New("BountyArena not configured")
+	}
+	return c.bountyArena.GetBountyPlayers(&bind.CallOpts{Context: ctx}, bountyID)
+}
+
+// SettleBounty settles a bounty on-chain with the given winner.
+func (c *ChainClient) SettleBounty(ctx context.Context, bountyID *big.Int, winner common.Address) (string, error) {
+	if c.bountyArena == nil {
+		return "", errors.New("BountyArena not configured")
+	}
+	label := fmt.Sprintf("Bounty %s: settleBounty(%s)", bountyID, winner.Hex()[:10])
+	tx, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.bountyArena.SettleBounty(opts, bountyID, winner)
+	})
+	if err != nil {
+		return "", fmt.Errorf("failed to settle bounty: %w", err)
+	}
+	return tx.Hash().Hex(), nil
+}
+
+// RefundBounty refunds all players in a bounty.
+func (c *ChainClient) RefundBounty(ctx context.Context, bountyID *big.Int) error {
+	if c.bountyArena == nil {
+		return errors.New("BountyArena not configured")
+	}
+	label := fmt.Sprintf("Bounty %s: refundBounty", bountyID)
+	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.bountyArena.RefundBounty(opts, bountyID)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to refund bounty: %w", err)
+	}
 	return nil
 }
 

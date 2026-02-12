@@ -35,6 +35,13 @@ func main() {
 	port := getEnv("PORT", "9001")
 	llmQuestionsEnabled := getEnvBool("LLM_QUESTIONS_ENABLED", false)
 
+	// Strategy engine config
+	walletAddress := os.Getenv("AGENT_WALLET_ADDRESS")
+	neuronAddress := os.Getenv("NEURON_ADDRESS")
+	usdcAddress := os.Getenv("USDC_ADDRESS")
+	monadRPCURL := os.Getenv("MONAD_RPC_URL")
+	rechargeThreshold := float64(getEnvInt("RECHARGE_THRESHOLD", 50))
+
 	// Pre-stocking config
 	questionBufferSize := getEnvInt("QUESTION_BUFFER_SIZE", 3)
 	personalityBufferSize := getEnvInt("PERSONALITY_BUFFER_SIZE", 2)
@@ -54,12 +61,14 @@ func main() {
 	glmKey := os.Getenv("GLM_API_KEY")
 	kimiKey := os.Getenv("KIMI_API_KEY")
 	claudeKey := os.Getenv("CLAUDE_API_KEY")
+	openRouterKey := os.Getenv("OPENROUTER_API_KEY")
+	openRouterModel := os.Getenv("OPENROUTER_MODEL")
 
 	log.Printf("Starting axon-agent %s (role=%s) with primary LLM: %s, LLM questions: %v",
 		agentID, agentRole, primaryLLM, llmQuestionsEnabled)
 
 	// Create LLM client with failover
-	llmClient := llm.CreateFailoverClient(agentID, primaryLLM, glmKey, kimiKey, claudeKey)
+	llmClient := llm.CreateFailoverClientWithOpenRouter(agentID, primaryLLM, glmKey, kimiKey, claudeKey, openRouterKey, openRouterModel)
 
 	// Configure generator options
 	var genOpts []question.GeneratorOption
@@ -77,6 +86,11 @@ func main() {
 		PreStockCategories:    preStockCategories,
 		QuestionBufferSize:    questionBufferSize,
 		PersonalityBufferSize: personalityBufferSize,
+		WalletAddress:         walletAddress,
+		NeuronAddress:         neuronAddress,
+		USDCAddress:           usdcAddress,
+		MonadRPCURL:           monadRPCURL,
+		RechargeThreshold:     rechargeThreshold,
 	})
 
 	// Setup gin router

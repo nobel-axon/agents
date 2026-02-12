@@ -86,6 +86,13 @@ func isRetryable(err error) bool {
 
 // CreateFailoverClient creates a failover client based on agent configuration.
 func CreateFailoverClient(agentID, primaryLLM, glmKey, kimiKey, claudeKey string) *FailoverClient {
+	return CreateFailoverClientWithOpenRouter(agentID, primaryLLM, glmKey, kimiKey, claudeKey, "", "")
+}
+
+// CreateFailoverClientWithOpenRouter creates a failover client with optional OpenRouter support.
+// When openRouterKey is provided, OpenRouter is added as the primary provider with
+// the default failover chain: OpenRouter -> GLM -> Claude.
+func CreateFailoverClientWithOpenRouter(agentID, primaryLLM, glmKey, kimiKey, claudeKey, openRouterKey, openRouterModel string) *FailoverClient {
 	var primary Provider
 	var failovers []Provider
 
@@ -93,20 +100,43 @@ func CreateFailoverClient(agentID, primaryLLM, glmKey, kimiKey, claudeKey string
 	kimi := NewKimiProvider(kimiKey)
 	claude := NewClaudeProvider(claudeKey)
 
-	switch primaryLLM {
-	case "glm":
-		primary = glm
-		failovers = []Provider{kimi, claude}
-	case "kimi":
-		primary = kimi
-		failovers = []Provider{claude, glm}
-	case "claude":
-		primary = claude
-		failovers = []Provider{glm, kimi}
-	default:
-		// Default to GLM
-		primary = glm
-		failovers = []Provider{kimi, claude}
+	// If OpenRouter key is provided, include it in the chain
+	if openRouterKey != "" {
+		openRouter := NewOpenRouterProvider(openRouterKey, openRouterModel)
+
+		switch primaryLLM {
+		case "openrouter":
+			primary = openRouter
+			failovers = []Provider{glm, claude}
+		case "glm":
+			primary = glm
+			failovers = []Provider{openRouter, kimi, claude}
+		case "kimi":
+			primary = kimi
+			failovers = []Provider{openRouter, claude, glm}
+		case "claude":
+			primary = claude
+			failovers = []Provider{openRouter, glm, kimi}
+		default:
+			// Default: OpenRouter primary
+			primary = openRouter
+			failovers = []Provider{glm, claude}
+		}
+	} else {
+		switch primaryLLM {
+		case "glm":
+			primary = glm
+			failovers = []Provider{kimi, claude}
+		case "kimi":
+			primary = kimi
+			failovers = []Provider{claude, glm}
+		case "claude":
+			primary = claude
+			failovers = []Provider{glm, kimi}
+		default:
+			primary = glm
+			failovers = []Provider{kimi, claude}
+		}
 	}
 
 	return NewFailoverClient(agentID, primary, failovers)

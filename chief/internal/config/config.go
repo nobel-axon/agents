@@ -55,6 +55,13 @@ type ChainConfig struct {
 	MaxGasPrice       string `yaml:"maxGasPrice"`
 	TxRetryCount      int    `yaml:"txRetryCount"`
 	TxRetryIntervalMs int    `yaml:"txRetryIntervalMs"`
+
+	// ERC-8004 reputation registries (optional, V2)
+	IdentityRegistryAddress   string `yaml:"identityRegistryAddress"`
+	ReputationRegistryAddress string `yaml:"reputationRegistryAddress"`
+
+	// BountyArena contract (optional, V2)
+	BountyArenaAddress string `yaml:"bountyArenaAddress"`
 }
 
 // JudgeConfig holds agent endpoint settings for each role.
@@ -221,6 +228,17 @@ func Load(path string) (*Config, error) {
 	}
 	if v := os.Getenv("ADMIN_TOKEN"); v != "" {
 		cfg.AdminToken = v
+	}
+
+	// ERC-8004 reputation registries (V2)
+	if v := os.Getenv("IDENTITY_REGISTRY_ADDRESS"); v != "" {
+		cfg.Chain.IdentityRegistryAddress = v
+	}
+	if v := os.Getenv("REPUTATION_REGISTRY_ADDRESS"); v != "" {
+		cfg.Chain.ReputationRegistryAddress = v
+	}
+	if v := os.Getenv("BOUNTY_ARENA_ADDRESS"); v != "" {
+		cfg.Chain.BountyArenaAddress = v
 	}
 
 	// Server (axon-server) reporter settings

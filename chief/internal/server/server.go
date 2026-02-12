@@ -12,6 +12,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 
+	"github.com/axon-arena/axon-chief/internal/bounty"
 	"github.com/axon-arena/axon-chief/internal/burn"
 	"github.com/axon-arena/axon-chief/internal/chain"
 	"github.com/axon-arena/axon-chief/internal/config"
@@ -37,6 +38,7 @@ type Server struct {
 	recoveryService   *RecoveryService
 	burnManager       *burn.Manager
 	reporter          *reporter.Reporter
+	bountyManager     *bounty.Manager
 
 	// Event handling state
 	handledEvents map[string]time.Time   // eventKey (txHash:logIndex) -> timestamp
@@ -125,6 +127,9 @@ func NewServer(
 
 	// Create burn manager for nad.fun swap integration
 	s.burnManager = burn.NewManager(&cfg.NadFun, chainClient)
+
+	// Create bounty manager (V2)
+	s.bountyManager = bounty.NewManager()
 
 	// Create reporter for pushing data to axon-server (optional)
 	if cfg.Server.URL != "" {
@@ -380,6 +385,9 @@ func (s *Server) onSettleMatch(ctx context.Context, matchID *big.Int, winner com
 	// Clean up
 	s.verificationMgr.RemoveQueue(matchID)
 
+	// Submit ERC-8004 reputation feedback (async, non-blocking)
+	go s.submitReputationFeedback(matchID)
+
 	// Execute burn allocation swap (async, non-blocking)
 	// This claims the 5% burn allocation, swaps MON→NEURON via nad.fun, and burns the NEURON
 	go func() {
@@ -457,6 +465,7 @@ func (s *Server) onMatchTimeout(ctx context.Context, matchID *big.Int) error {
 
 			// Clean up and create next match
 			s.verificationMgr.RemoveQueue(matchID)
+			go s.submitReputationFeedback(matchID)
 			s.createNextMatchAfterCooldown()
 
 			return nil
@@ -499,6 +508,7 @@ func (s *Server) onMatchTimeout(ctx context.Context, matchID *big.Int) error {
 
 		s.revealAnswer(ctx, matchID, state)
 		s.verificationMgr.RemoveQueue(matchID)
+		go s.submitReputationFeedback(matchID)
 		s.createNextMatchAfterCooldown()
 		return nil
 	}
@@ -547,6 +557,56 @@ func (s *Server) revealAnswer(ctx context.Context, matchID *big.Int, state *matc
 			if s.reporter != nil {
 				go s.reporter.ReportAnswerRevealed(context.Background(), matchID.String(), reveal.Answer, reveal.Salt)
 			}
+		}
+	}
+}
+
+// submitReputationFeedback submits ERC-8004 reputation feedback for all match participants.
+// Runs as an async goroutine — errors are logged but do not block settlement.
+func (s *Server) submitReputationFeedback(matchID *big.Int) {
+	if !s.chainClient.HasReputationContracts() {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+
+	state, err := s.matchManager.GetMatch(matchID)
+	if err != nil {
+		log.Printf("Match %s: reputation feedback skipped (match not found): %v", matchID, err)
+		return
+	}
+
+	evals := state.GetAllEvaluations()
+	if len(evals) == 0 {
+		log.Printf("Match %s: reputation feedback skipped (no evaluations)", matchID)
+		return
+	}
+
+	for participant, eval := range evals {
+		// TODO: resolve wallet address -> agentId via indexer or local cache.
+		// For now, use participant address as a numeric agent ID placeholder.
+		// Agents must self-register via IdentityRegistry.register() before matches.
+		agentId, ok := new(big.Int).SetString(participant[2:], 16) // address as uint256
+		if !ok {
+			log.Printf("Match %s: failed to parse participant address %s as agentId", matchID, participant)
+			continue
+		}
+
+		score := big.NewInt(int64(eval.TotalScore))
+		tag1 := "axon-arena"
+		tag2 := fmt.Sprintf("match:%s", matchID)
+		var feedbackHash [32]byte
+
+		if err := s.chainClient.GiveFeedback(ctx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
+			log.Printf("Match %s: failed to give feedback for %s (score=%d): %v", matchID, participant, eval.TotalScore, err)
+			continue
+		}
+		log.Printf("Match %s: submitted ERC-8004 feedback for %s (score=%d)", matchID, participant, eval.TotalScore)
+
+		// Report reputation update to server
+		if s.reporter != nil {
+			go s.reporter.ReportReputationUpdate(context.Background(), participant, eval.TotalScore)
 		}
 	}
 }

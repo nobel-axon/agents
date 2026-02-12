@@ -15,6 +15,7 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/gin-gonic/gin"
 
+	"github.com/axon-arena/axon-chief/internal/bounty"
 	"github.com/axon-arena/axon-chief/internal/judge"
 	"github.com/axon-arena/axon-chief/internal/match"
 	"github.com/axon-arena/axon-chief/internal/reporter"
@@ -228,6 +229,28 @@ func (s *Server) handleEvent(c *gin.Context) {
 		// Agent joined queue - triggers grace period + auto-start logic
 		log.Printf("POST /event: agent_joined_queue for match %d", req.MatchID)
 		s.handleAgentJoinedQueueEvent(ctx, matchID, req.Data)
+
+	// Bounty events (V2)
+	case "bounty_created":
+		if err := s.handleBountyCreated(ctx, matchID, req.Data); err != nil {
+			log.Printf("POST /event: bounty_created %d failed: %v", req.MatchID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+	case "agent_joined_bounty":
+		if err := s.handleAgentJoinedBounty(ctx, matchID, req.Data); err != nil {
+			log.Printf("POST /event: agent_joined_bounty %d failed: %v", req.MatchID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+
+	case "bounty_answer_submitted":
+		if err := s.handleBountyAnswerSubmitted(ctx, matchID, req.Data); err != nil {
+			log.Printf("POST /event: bounty_answer_submitted %d failed: %v", req.MatchID, err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
 
 	default:
 		log.Printf("POST /event: unknown event type %q for match %d", req.Type, req.MatchID)
@@ -991,4 +1014,287 @@ func (s *Server) handleGetMatch(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, resp)
+}
+
+// --- Bounty Handlers (V2) ---
+
+// handleBountyCreated processes a bounty_created event.
+// Registers the bounty in memory, generates judge personalities, and starts monitoring.
+func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, data map[string]interface{}) error {
+	if !s.chainClient.HasBountyArena() {
+		log.Printf("Bounty %s: BountyArena not configured, ignoring bounty_created", bountyID)
+		return nil
+	}
+
+	creatorStr, _ := data["creator"].(string)
+	question, _ := data["question"].(string)
+	category, _ := data["category"].(string)
+	difficulty, _ := data["difficulty"].(float64)
+	entryFeeStr, _ := data["entryFee"].(string)
+	deadlineUnix, _ := data["deadline"].(float64)
+	maxParticipants, _ := data["maxParticipants"].(float64)
+	minRatingStr, _ := data["minRating"].(string)
+
+	entryFee, _ := new(big.Int).SetString(entryFeeStr, 10)
+	if entryFee == nil {
+		entryFee = big.NewInt(0)
+	}
+	minRating, _ := new(big.Int).SetString(minRatingStr, 10)
+	if minRating == nil {
+		minRating = big.NewInt(0)
+	}
+	deadline := time.Unix(int64(deadlineUnix), 0)
+
+	state := bounty.NewBountyState(
+		bountyID,
+		common.HexToAddress(creatorStr),
+		question, category, uint8(difficulty),
+		entryFee, deadline, uint8(maxParticipants), minRating,
+	)
+
+	if err := s.bountyManager.CreateBounty(state); err != nil {
+		return fmt.Errorf("register bounty: %w", err)
+	}
+
+	log.Printf("Bounty %s: registered (question=%q, category=%s, deadline=%v)", bountyID, question, category, deadline)
+
+	// Generate judge personalities for this bounty (same logic as matches)
+	go func() {
+		bgCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		resp, err := s.judgeCoordinator.GeneratePersonalities(bgCtx, "bounty-"+bountyID.String(), category)
+		if err != nil {
+			log.Printf("Bounty %s: failed to generate personalities: %v", bountyID, err)
+			return
+		}
+
+		if len(resp.Personalities) < 3 {
+			log.Printf("Bounty %s: expected 3 personalities, got %d", bountyID, len(resp.Personalities))
+			return
+		}
+
+		personalities := make([]match.Personality, len(resp.Personalities))
+		for i, p := range resp.Personalities {
+			personalities[i] = match.Personality{
+				ID:          p.ID,
+				Name:        p.Name,
+				Perspective: p.Perspective,
+				Values:      p.Values,
+				Style:       p.Style,
+			}
+		}
+		state.SetPersonalities(personalities)
+
+		panel := s.judgeCoordinator.AssignJudgePanel()
+		state.SetJudgePanel(panel)
+
+		log.Printf("Bounty %s: generated %d judge personalities, panel %v", bountyID, len(personalities), panel)
+	}()
+
+	return nil
+}
+
+// handleAgentJoinedBounty processes an agent_joined_bounty event.
+func (s *Server) handleAgentJoinedBounty(ctx context.Context, bountyID *big.Int, data map[string]interface{}) error {
+	agentStr, _ := data["agent"].(string)
+	playerCount, _ := data["playerCount"].(float64)
+
+	state, err := s.bountyManager.GetBounty(bountyID)
+	if err != nil {
+		// Not tracked — might be a bounty created before chief started
+		log.Printf("Bounty %s: agent_joined_bounty but bounty not tracked: %v", bountyID, err)
+		return nil
+	}
+
+	agent := common.HexToAddress(agentStr)
+	state.AddPlayer(agent)
+
+	log.Printf("Bounty %s: agent %s joined (count now %d, reported %d)", bountyID, agentStr, state.PlayerCount, int(playerCount))
+	return nil
+}
+
+// handleBountyAnswerSubmitted processes a bounty_answer_submitted event.
+// Evaluates the answer with the judge panel (reuses EvaluateSingleAnswer logic).
+func (s *Server) handleBountyAnswerSubmitted(ctx context.Context, bountyID *big.Int, data map[string]interface{}) error {
+	agentStr, _ := data["agent"].(string)
+	answer, _ := data["answer"].(string)
+	reasoning, _ := data["reasoning"].(string)
+
+	state, err := s.bountyManager.GetBounty(bountyID)
+	if err != nil {
+		log.Printf("Bounty %s: answer submitted but bounty not tracked: %v", bountyID, err)
+		return nil
+	}
+
+	personalities := state.GetPersonalities()
+	if len(personalities) == 0 {
+		log.Printf("Bounty %s: no personalities assigned yet, deferring evaluation", bountyID)
+		return nil
+	}
+
+	panel := state.GetJudgePanel()
+	if len(panel) == 0 {
+		log.Printf("Bounty %s: no judge panel assigned", bountyID)
+		return nil
+	}
+
+	// Evaluate in background
+	go func() {
+		evalCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+
+		judgePersonalities := make([]judge.Personality, len(personalities))
+		for i, p := range personalities {
+			judgePersonalities[i] = judge.Personality{
+				ID:          p.ID,
+				Name:        p.Name,
+				Perspective: p.Perspective,
+				Values:      p.Values,
+				Style:       p.Style,
+			}
+		}
+
+		panelResult, err := s.judgeCoordinator.EvaluateWithPanel(
+			evalCtx, panel,
+			"bounty-"+bountyID.String(),
+			state.Question, answer, reasoning,
+			judgePersonalities,
+		)
+		if err != nil {
+			log.Printf("Bounty %s: evaluation failed for %s: %v", bountyID, agentStr, err)
+			return
+		}
+
+		// Build and store evaluation
+		judgeResults := make([]match.JudgeResult, 0, len(panelResult.JudgeResults))
+		for _, jr := range panelResult.JudgeResults {
+			if jr.Error != nil || jr.Response == nil {
+				continue
+			}
+			evals := make([]match.PersonalityEvaluation, len(jr.Response.Evaluations))
+			for i, e := range jr.Response.Evaluations {
+				evals[i] = match.PersonalityEvaluation{
+					PersonalityID:   e.PersonalityID,
+					PersonalityName: e.PersonalityName,
+					Score:           e.Score,
+					Convinced:       e.Convinced,
+					Concerns:        e.Concerns,
+					Verdict:         e.Verdict,
+					AgreeLevel:      e.AgreeLevel,
+				}
+			}
+			judgeResults = append(judgeResults, match.JudgeResult{
+				JudgeIndex:  jr.JudgeIndex,
+				TotalScore:  jr.Response.TotalScore,
+				Agreement:   jr.Response.Agreement,
+				Evaluations: evals,
+			})
+		}
+
+		eval := &match.ParticipantEvaluation{
+			Participant:  agentStr,
+			Answer:       answer,
+			Reasoning:    reasoning,
+			JudgeResults: judgeResults,
+			TotalScore:   panelResult.AverageScore,
+			Agreement:    panelResult.Agreement,
+			SubmittedAt:  time.Now(),
+		}
+		if len(judgeResults) > 0 {
+			eval.Evaluations = judgeResults[0].Evaluations
+		}
+
+		state.AddEvaluation(agentStr, eval)
+		log.Printf("Bounty %s: evaluated answer from %s - score=%d, agreement=%s",
+			bountyID, agentStr, panelResult.AverageScore, panelResult.Agreement)
+	}()
+
+	return nil
+}
+
+// onSettleBounty settles a bounty by determining the winner and submitting on-chain.
+func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
+	state, err := s.bountyManager.GetBounty(bountyID)
+	if err != nil {
+		return fmt.Errorf("bounty not found: %w", err)
+	}
+
+	evals := state.GetAllEvaluations()
+	if len(evals) == 0 {
+		log.Printf("Bounty %s: no evaluations, refunding", bountyID)
+		if err := s.chainClient.RefundBounty(ctx, bountyID); err != nil {
+			return fmt.Errorf("refund bounty: %w", err)
+		}
+		state.Phase = bounty.PhaseRefunded
+		s.bountyManager.RemoveBounty(bountyID)
+		return nil
+	}
+
+	// Determine winner by highest score
+	var highestScore int
+	var winner common.Address
+	var winnerEval *match.ParticipantEvaluation
+
+	for participant, eval := range evals {
+		if eval.TotalScore > highestScore ||
+			(eval.TotalScore == highestScore && winnerEval != nil && eval.SubmittedAt.Before(winnerEval.SubmittedAt)) {
+			highestScore = eval.TotalScore
+			winner = common.HexToAddress(participant)
+			winnerEval = eval
+		}
+	}
+
+	if winner == (common.Address{}) {
+		log.Printf("Bounty %s: no winner determined, refunding", bountyID)
+		if err := s.chainClient.RefundBounty(ctx, bountyID); err != nil {
+			return fmt.Errorf("refund bounty: %w", err)
+		}
+		state.Phase = bounty.PhaseRefunded
+		s.bountyManager.RemoveBounty(bountyID)
+		return nil
+	}
+
+	// Settle on chain
+	log.Printf("Bounty %s: settling with winner %s (score: %d)", bountyID, winner.Hex(), highestScore)
+	txHash, err := s.chainClient.SettleBounty(ctx, bountyID, winner)
+	if err != nil {
+		return fmt.Errorf("settle bounty on chain: %w", err)
+	}
+	_ = txHash
+
+	state.Phase = bounty.PhaseSettled
+	state.Winner = winner
+
+	// Submit ERC-8004 feedback for all bounty participants
+	go func() {
+		if !s.chainClient.HasReputationContracts() {
+			return
+		}
+		fbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+
+		for participant, eval := range evals {
+			// TODO: resolve wallet address -> agentId via indexer or local cache.
+			agentId, ok := new(big.Int).SetString(participant[2:], 16)
+			if !ok {
+				log.Printf("Bounty %s: failed to parse participant address %s as agentId", bountyID, participant)
+				continue
+			}
+
+			score := big.NewInt(int64(eval.TotalScore))
+			tag1 := "axon-arena"
+			tag2 := fmt.Sprintf("bounty:%s", bountyID)
+			var feedbackHash [32]byte
+
+			if err := s.chainClient.GiveFeedback(fbCtx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
+				log.Printf("Bounty %s: failed to give feedback for %s: %v", bountyID, participant, err)
+				continue
+			}
+			log.Printf("Bounty %s: submitted ERC-8004 feedback for %s (score=%d)", bountyID, participant, eval.TotalScore)
+		}
+	}()
+
+	s.bountyManager.RemoveBounty(bountyID)
+	return nil
 }

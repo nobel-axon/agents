@@ -12,6 +12,7 @@ import (
 	"github.com/axon-arena/axon-agent/internal/llm"
 	"github.com/axon-arena/axon-agent/internal/personality"
 	"github.com/axon-arena/axon-agent/internal/question"
+	"github.com/axon-arena/axon-agent/internal/strategy"
 	"github.com/axon-arena/axon-agent/internal/verify"
 )
 
@@ -31,6 +32,7 @@ type Server struct {
 
 	questionBuffer      *question.QuestionBuffer
 	personalityPreStock *personality.PreStocker
+	strategyEngine      *strategy.Engine
 }
 
 // Config holds server configuration.
@@ -44,6 +46,13 @@ type Config struct {
 	PreStockCategories    []string
 	QuestionBufferSize    int
 	PersonalityBufferSize int
+
+	// Strategy engine config
+	WalletAddress     string
+	NeuronAddress     string
+	USDCAddress       string
+	MonadRPCURL       string
+	RechargeThreshold float64
 }
 
 // NewServer creates a new server instance, only initializing subsystems needed for the role.
@@ -105,6 +114,15 @@ func NewServer(cfg Config) *Server {
 		s.personalityEvaluator = personality.NewEvaluator(cfg.LLMClient)
 	}
 
+	// Initialize strategy engine if wallet address is configured
+	if cfg.WalletAddress != "" && cfg.NeuronAddress != "" && cfg.MonadRPCURL != "" {
+		threshold := cfg.RechargeThreshold
+		if threshold <= 0 {
+			threshold = 50
+		}
+		s.strategyEngine = strategy.NewEngine(cfg.WalletAddress, cfg.NeuronAddress, cfg.USDCAddress, cfg.MonadRPCURL, threshold)
+	}
+
 	return s
 }
 
@@ -122,6 +140,12 @@ func (s *Server) Shutdown() {
 // SetupRoutes configures the gin router based on the agent's role.
 func (s *Server) SetupRoutes(r *gin.Engine) {
 	r.GET("/health", s.handleHealth)
+
+	// Strategy endpoints (available for all roles when engine is configured)
+	if s.strategyEngine != nil {
+		r.POST("/strategy/evaluate-match", s.handleStrategyEvaluate)
+		r.GET("/strategy/status", s.handleStrategyStatus)
+	}
 
 	switch s.role {
 	case "philosopher":
@@ -617,4 +641,20 @@ func (s *Server) GetPersonalityStore() *personality.Store {
 // GetPersonalityFactory returns the personality factory for external use.
 func (s *Server) GetPersonalityFactory() *personality.Factory {
 	return s.personalityFactory
+}
+
+func (s *Server) handleStrategyEvaluate(c *gin.Context) {
+	var req strategy.MatchEvaluationRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	decision := s.strategyEngine.Evaluate(req)
+	c.JSON(http.StatusOK, decision)
+}
+
+func (s *Server) handleStrategyStatus(c *gin.Context) {
+	status := s.strategyEngine.Status()
+	c.JSON(http.StatusOK, status)
 }

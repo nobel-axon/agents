@@ -22,11 +22,12 @@ const (
 	backoffFactor  = 2.0
 )
 
-// OpenAICompatProvider implements Provider for OpenAI-compatible APIs (GLM, Kimi).
+// OpenAICompatProvider implements Provider for OpenAI-compatible APIs (GLM, Kimi, OpenRouter).
 type OpenAICompatProvider struct {
-	name    string
-	config  Config
-	client  *http.Client
+	name         string
+	config       Config
+	client       *http.Client
+	extraHeaders map[string]string
 }
 
 // ChatMessage represents a message in the chat format.
@@ -153,6 +154,9 @@ func (p *OpenAICompatProvider) doRequest(ctx context.Context, jsonBody []byte) (
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.config.APIKey)
+	for k, v := range p.extraHeaders {
+		req.Header.Set(k, v)
+	}
 
 	resp, err := p.client.Do(req)
 	if err != nil {
@@ -253,4 +257,23 @@ func NewKimiProvider(apiKey string) *OpenAICompatProvider {
 		Model:   "moonshot-v1-8k",
 		Timeout: 60,
 	})
+}
+
+// NewOpenRouterProvider creates an OpenRouter provider.
+// If model is empty, defaults to moonshotai/kimi-k2.
+func NewOpenRouterProvider(apiKey, model string) *OpenAICompatProvider {
+	if model == "" {
+		model = "moonshotai/kimi-k2"
+	}
+	p := NewOpenAICompatProvider("openrouter", Config{
+		APIKey:  apiKey,
+		BaseURL: "https://openrouter.ai/api/v1/chat/completions",
+		Model:   model,
+		Timeout: 90,
+	})
+	p.extraHeaders = map[string]string{
+		"HTTP-Referer": "https://axon-arena.com",
+		"X-Title":      "Axon Arena",
+	}
+	return p
 }
