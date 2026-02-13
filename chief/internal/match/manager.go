@@ -41,6 +41,9 @@ type State struct {
 	GraceTimerStarted bool         // Whether the grace timer has been started (minPlayers reached)
 	GraceDone         chan struct{} // Closed when maxPlayers reached during grace to trigger early start
 
+	// Wallet → ERC-8004 agentId mapping (populated on agent join)
+	AgentIDs map[string]*big.Int
+
 	// Personality-based judging
 	Personalities []Personality                        // 3 unique judge personalities for this match
 	JudgePanel    []int                                // assigned judge indices for this match
@@ -93,6 +96,7 @@ func (m *Manager) CreateMatch(id *big.Int, queueDeadline time.Time) (*State, err
 		QueueDeadline: queueDeadline,
 		CreatedAt:     time.Now(),
 		UpdatedAt:     time.Now(),
+		AgentIDs:      make(map[string]*big.Int),
 		Evaluations:   make(map[string]*ParticipantEvaluation),
 		GraceDone:     make(chan struct{}),
 	}
@@ -361,6 +365,7 @@ func (m *Manager) RecoverActiveMatches(ctx context.Context, getMatchState func(c
 			Winner:        winner,
 			CreatedAt:     time.Now(),
 			UpdatedAt:     time.Now(),
+			AgentIDs:      make(map[string]*big.Int),
 			Evaluations:   make(map[string]*ParticipantEvaluation),
 		}
 
@@ -372,6 +377,27 @@ func (m *Manager) RecoverActiveMatches(ctx context.Context, getMatchState func(c
 	}
 
 	return nil
+}
+
+// SetAgentID maps a wallet address to its ERC-8004 agentId.
+func (s *State) SetAgentID(wallet string, agentID *big.Int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.AgentIDs == nil {
+		s.AgentIDs = make(map[string]*big.Int)
+	}
+	s.AgentIDs[wallet] = agentID
+}
+
+// GetAgentID returns the ERC-8004 agentId for a wallet address.
+func (s *State) GetAgentID(wallet string) (*big.Int, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.AgentIDs == nil {
+		return nil, false
+	}
+	id, ok := s.AgentIDs[wallet]
+	return id, ok
 }
 
 // SetPersonalities sets the judge personalities for this match.

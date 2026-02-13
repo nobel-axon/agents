@@ -16,22 +16,16 @@ import (
 type Phase int
 
 const (
-	PhaseOpen Phase = iota
-	PhaseActive
+	PhaseActive Phase = iota
 	PhaseSettled
-	PhaseRefunded
 )
 
 func (p Phase) String() string {
 	switch p {
-	case PhaseOpen:
-		return "open"
 	case PhaseActive:
 		return "active"
 	case PhaseSettled:
 		return "settled"
-	case PhaseRefunded:
-		return "refunded"
 	default:
 		return "unknown"
 	}
@@ -56,6 +50,9 @@ type BountyState struct {
 	Players         []common.Address
 	Winner          common.Address
 
+	// Wallet → ERC-8004 agentId mapping (populated on agent join)
+	AgentIDs map[string]*big.Int
+
 	// Judge evaluation state
 	Personalities []match.Personality
 	JudgePanel    []int
@@ -75,8 +72,9 @@ func NewBountyState(id *big.Int, creator common.Address, question, category stri
 		Deadline:        deadline,
 		MaxParticipants: maxParticipants,
 		MinRating:       minRating,
-		Phase:           PhaseOpen,
+		Phase:           PhaseActive,
 		Players:         make([]common.Address, 0),
+		AgentIDs:        make(map[string]*big.Int),
 		Evaluations:     make(map[string]*match.ParticipantEvaluation),
 	}
 }
@@ -87,6 +85,21 @@ func (b *BountyState) AddPlayer(addr common.Address) {
 	defer b.mu.Unlock()
 	b.Players = append(b.Players, addr)
 	b.PlayerCount = len(b.Players)
+}
+
+// SetAgentID maps a wallet address to its ERC-8004 agentId.
+func (b *BountyState) SetAgentID(wallet string, agentID *big.Int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.AgentIDs[wallet] = agentID
+}
+
+// GetAgentID returns the ERC-8004 agentId for a wallet address.
+func (b *BountyState) GetAgentID(wallet string) (*big.Int, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	id, ok := b.AgentIDs[wallet]
+	return id, ok
 }
 
 // SetPersonalities stores the judge personalities for this bounty.
@@ -188,7 +201,7 @@ func (m *Manager) GetActiveBounties() []*BountyState {
 
 	var active []*BountyState
 	for _, b := range m.bounties {
-		if b.Phase == PhaseOpen || b.Phase == PhaseActive {
+		if b.Phase == PhaseActive {
 			active = append(active, b)
 		}
 	}

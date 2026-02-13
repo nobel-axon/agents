@@ -153,6 +153,20 @@ func (r *Reporter) ReportAnswerSubmitted(ctx context.Context, req AnswerSubmitte
 	return r.post(ctx, "/internal/answer-submitted", req)
 }
 
+// BountyAnswerResultRequest is the request for recording bounty answer evaluation results.
+type BountyAnswerResultRequest struct {
+	BountyID    int64           `json:"bountyId"`
+	AgentAddr   string          `json:"agentAddr"`
+	TotalScore  int             `json:"totalScore"`
+	Agreement   string          `json:"agreement"`
+	Evaluations json.RawMessage `json:"evaluations,omitempty"`
+}
+
+// ReportBountyAnswerResult sends a bounty answer evaluation result to the server.
+func (r *Reporter) ReportBountyAnswerResult(ctx context.Context, req BountyAnswerResultRequest) error {
+	return r.post(ctx, "/internal/bounty-answer-result", req)
+}
+
 // ReputationUpdateRequest is the request for reporting reputation updates.
 type ReputationUpdateRequest struct {
 	AgentAddr string `json:"agentAddr"`

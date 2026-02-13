@@ -820,42 +820,27 @@ func (c *ChainClient) GetBountyState(ctx context.Context, bountyID *big.Int) (bi
 	return c.bountyArena.GetBountyState(&bind.CallOpts{Context: ctx}, bountyID)
 }
 
-// GetBountyPlayers returns the players in a bounty.
-func (c *ChainClient) GetBountyPlayers(ctx context.Context, bountyID *big.Int) ([]common.Address, error) {
+// GetBountyAgents returns the agents in a bounty.
+func (c *ChainClient) GetBountyAgents(ctx context.Context, bountyID *big.Int) ([]common.Address, error) {
 	if c.bountyArena == nil {
 		return nil, errors.New("BountyArena not configured")
 	}
-	return c.bountyArena.GetBountyPlayers(&bind.CallOpts{Context: ctx}, bountyID)
+	return c.bountyArena.GetBountyAgents(&bind.CallOpts{Context: ctx}, bountyID)
 }
 
-// SettleBounty settles a bounty on-chain with the given winner.
-func (c *ChainClient) SettleBounty(ctx context.Context, bountyID *big.Int, winner common.Address) (string, error) {
+// PickWinner settles a bounty on-chain by picking the winner. Returns the TX hash.
+func (c *ChainClient) PickWinner(ctx context.Context, bountyID *big.Int, winner common.Address) (string, error) {
 	if c.bountyArena == nil {
 		return "", errors.New("BountyArena not configured")
 	}
-	label := fmt.Sprintf("Bounty %s: settleBounty(%s)", bountyID, winner.Hex()[:10])
+	label := fmt.Sprintf("Bounty %s: pickWinner(%s)", bountyID, winner.Hex()[:10])
 	tx, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
-		return c.bountyArena.SettleBounty(opts, bountyID, winner)
+		return c.bountyArena.PickWinner(opts, bountyID, winner)
 	})
 	if err != nil {
-		return "", fmt.Errorf("failed to settle bounty: %w", err)
+		return "", fmt.Errorf("failed to pick winner: %w", err)
 	}
 	return tx.Hash().Hex(), nil
-}
-
-// RefundBounty refunds all players in a bounty.
-func (c *ChainClient) RefundBounty(ctx context.Context, bountyID *big.Int) error {
-	if c.bountyArena == nil {
-		return errors.New("BountyArena not configured")
-	}
-	label := fmt.Sprintf("Bounty %s: refundBounty", bountyID)
-	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
-		return c.bountyArena.RefundBounty(opts, bountyID)
-	})
-	if err != nil {
-		return fmt.Errorf("failed to refund bounty: %w", err)
-	}
-	return nil
 }
 
 // sendTxWithRetryValue sends a transaction with value and retries.

@@ -36,9 +36,10 @@ type Server struct {
 	staleWatcher      *watcher.StaleQueueWatcher
 	eventDetector     *watcher.EventDetector
 	recoveryService   *RecoveryService
-	burnManager       *burn.Manager
-	reporter          *reporter.Reporter
-	bountyManager     *bounty.Manager
+	burnManager            *burn.Manager
+	reporter               *reporter.Reporter
+	bountyManager          *bounty.Manager
+	bountyDeadlineWatcher  *watcher.BountyDeadlineWatcher
 
 	// Event handling state
 	handledEvents map[string]time.Time   // eventKey (txHash:logIndex) -> timestamp
@@ -131,6 +132,13 @@ func NewServer(
 	// Create bounty manager (V2)
 	s.bountyManager = bounty.NewManager()
 
+	// Create bounty deadline watcher (V2)
+	s.bountyDeadlineWatcher = watcher.NewBountyDeadlineWatcher(
+		s.bountyManager,
+		s.onSettleBounty,
+		cfg.Watcher.TimeoutCheckInterval,
+	)
+
 	// Create reporter for pushing data to axon-server (optional)
 	if cfg.Server.URL != "" {
 		s.reporter = reporter.NewReporter(cfg.Server.URL, cfg.Server.InternalSecret)
@@ -159,6 +167,7 @@ func (s *Server) Start(ctx context.Context) error {
 	// Start watchers
 	s.timeoutWatcher.Start()
 	s.staleWatcher.Start()
+	s.bountyDeadlineWatcher.Start()
 
 	// Only start direct chain polling if explicitly enabled.
 	// By default, events arrive via Ponder (axon-server POST /event).
@@ -193,6 +202,7 @@ func (s *Server) Stop() {
 	close(s.shutdownCh)
 	s.timeoutWatcher.Stop()
 	s.staleWatcher.Stop()
+	s.bountyDeadlineWatcher.Stop()
 	s.eventDetector.Stop()
 }
 
@@ -584,12 +594,10 @@ func (s *Server) submitReputationFeedback(matchID *big.Int) {
 	}
 
 	for participant, eval := range evals {
-		// TODO: resolve wallet address -> agentId via indexer or local cache.
-		// For now, use participant address as a numeric agent ID placeholder.
-		// Agents must self-register via IdentityRegistry.register() before matches.
-		agentId, ok := new(big.Int).SetString(participant[2:], 16) // address as uint256
-		if !ok {
-			log.Printf("Match %s: failed to parse participant address %s as agentId", matchID, participant)
+		// Look up agentId from stored wallet→agentId mapping
+		agentId, ok := state.GetAgentID(participant)
+		if !ok || agentId == nil {
+			log.Printf("Match %s: no agentId stored for %s, skipping feedback", matchID, participant)
 			continue
 		}
 
@@ -599,10 +607,10 @@ func (s *Server) submitReputationFeedback(matchID *big.Int) {
 		var feedbackHash [32]byte
 
 		if err := s.chainClient.GiveFeedback(ctx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
-			log.Printf("Match %s: failed to give feedback for %s (score=%d): %v", matchID, participant, eval.TotalScore, err)
+			log.Printf("Match %s: failed to give feedback for %s (agentId=%s, score=%d): %v", matchID, participant, agentId, eval.TotalScore, err)
 			continue
 		}
-		log.Printf("Match %s: submitted ERC-8004 feedback for %s (score=%d)", matchID, participant, eval.TotalScore)
+		log.Printf("Match %s: submitted ERC-8004 feedback for %s (agentId=%s, score=%d)", matchID, participant, agentId, eval.TotalScore)
 
 		// Report reputation update to server
 		if s.reporter != nil {

@@ -252,6 +252,21 @@ func (s *Server) handleEvent(c *gin.Context) {
 			return
 		}
 
+	case "bounty_settled":
+		// Bounty was settled on chain (creator called pickWinner) — submit feedback then clean up
+		log.Printf("POST /event: bounty_settled bounty %d", req.MatchID)
+		if state, err := s.bountyManager.GetBounty(matchID); err == nil {
+			evals := state.GetAllEvaluations()
+			if len(evals) > 0 {
+				s.submitBountyFeedback(matchID, state, evals)
+			}
+		}
+		s.bountyManager.RemoveBounty(matchID)
+
+	case "bounty_claim":
+		// Claim event — informational, no action needed from chief
+		log.Printf("POST /event: bounty_claim bounty %d", req.MatchID)
+
 	default:
 		log.Printf("POST /event: unknown event type %q for match %d", req.Type, req.MatchID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown event type"})
@@ -1098,6 +1113,7 @@ func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, dat
 // handleAgentJoinedBounty processes an agent_joined_bounty event.
 func (s *Server) handleAgentJoinedBounty(ctx context.Context, bountyID *big.Int, data map[string]interface{}) error {
 	agentStr, _ := data["agent"].(string)
+	agentIdFloat, _ := data["agentId"].(float64)
 	playerCount, _ := data["playerCount"].(float64)
 
 	state, err := s.bountyManager.GetBounty(bountyID)
@@ -1110,7 +1126,13 @@ func (s *Server) handleAgentJoinedBounty(ctx context.Context, bountyID *big.Int,
 	agent := common.HexToAddress(agentStr)
 	state.AddPlayer(agent)
 
-	log.Printf("Bounty %s: agent %s joined (count now %d, reported %d)", bountyID, agentStr, state.PlayerCount, int(playerCount))
+	// Store wallet → agentId mapping for reputation feedback
+	if agentIdFloat > 0 {
+		state.SetAgentID(agentStr, big.NewInt(int64(agentIdFloat)))
+	}
+
+	log.Printf("Bounty %s: agent %s (agentId=%d) joined (count now %d, reported %d)",
+		bountyID, agentStr, int64(agentIdFloat), state.PlayerCount, int(playerCount))
 	return nil
 }
 
@@ -1120,6 +1142,17 @@ func (s *Server) handleBountyAnswerSubmitted(ctx context.Context, bountyID *big.
 	agentStr, _ := data["agent"].(string)
 	answer, _ := data["answer"].(string)
 	reasoning, _ := data["reasoning"].(string)
+	txHash, _ := data["txHash"].(string)
+
+	// Idempotency check — prevent duplicate evaluation on event replay
+	if txHash != "" {
+		eventKey := fmt.Sprintf("bounty-answer:%s:%s", bountyID, txHash)
+		if s.isEventHandled(eventKey) {
+			log.Printf("Bounty %s: answer event already handled (txHash: %s)", bountyID, txHash)
+			return nil
+		}
+		defer s.markEventHandled(eventKey, "bounty_answer_submitted", bountyID.String())
+	}
 
 	state, err := s.bountyManager.GetBounty(bountyID)
 	if err != nil {
@@ -1208,6 +1241,19 @@ func (s *Server) handleBountyAnswerSubmitted(ctx context.Context, bountyID *big.
 		state.AddEvaluation(agentStr, eval)
 		log.Printf("Bounty %s: evaluated answer from %s - score=%d, agreement=%s",
 			bountyID, agentStr, panelResult.AverageScore, panelResult.Agreement)
+
+		// Report evaluation result to backend for persistence
+		var evalsJSON json.RawMessage
+		if len(judgeResults) > 0 {
+			evalsJSON, _ = json.Marshal(judgeResults)
+		}
+		go s.reporter.ReportBountyAnswerResult(context.Background(), reporter.BountyAnswerResultRequest{
+			BountyID:    bountyID.Int64(),
+			AgentAddr:   agentStr,
+			TotalScore:  panelResult.AverageScore,
+			Agreement:   panelResult.Agreement,
+			Evaluations: evalsJSON,
+		})
 	}()
 
 	return nil
@@ -1222,11 +1268,7 @@ func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
 
 	evals := state.GetAllEvaluations()
 	if len(evals) == 0 {
-		log.Printf("Bounty %s: no evaluations, refunding", bountyID)
-		if err := s.chainClient.RefundBounty(ctx, bountyID); err != nil {
-			return fmt.Errorf("refund bounty: %w", err)
-		}
-		state.Phase = bounty.PhaseRefunded
+		log.Printf("Bounty %s: no evaluations, skipping settlement (agents can claim refund)", bountyID)
 		s.bountyManager.RemoveBounty(bountyID)
 		return nil
 	}
@@ -1246,27 +1288,22 @@ func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
 	}
 
 	if winner == (common.Address{}) {
-		log.Printf("Bounty %s: no winner determined, refunding", bountyID)
-		if err := s.chainClient.RefundBounty(ctx, bountyID); err != nil {
-			return fmt.Errorf("refund bounty: %w", err)
-		}
-		state.Phase = bounty.PhaseRefunded
+		log.Printf("Bounty %s: no winner determined, skipping settlement (agents can claim refund)", bountyID)
 		s.bountyManager.RemoveBounty(bountyID)
 		return nil
 	}
 
-	// Settle on chain
-	log.Printf("Bounty %s: settling with winner %s (score: %d)", bountyID, winner.Hex(), highestScore)
-	txHash, err := s.chainClient.SettleBounty(ctx, bountyID, winner)
-	if err != nil {
-		return fmt.Errorf("settle bounty on chain: %w", err)
-	}
-	_ = txHash
+	// Settlement (pickWinner) is the creator's responsibility — Chief only submits reputation feedback
+	log.Printf("Bounty %s: best answer from %s (score: %d), submitting reputation feedback", bountyID, winner.Hex(), highestScore)
 
-	state.Phase = bounty.PhaseSettled
-	state.Winner = winner
+	s.submitBountyFeedback(bountyID, state, evals)
+	s.bountyManager.RemoveBounty(bountyID)
+	return nil
+}
 
-	// Submit ERC-8004 feedback for all bounty participants
+// submitBountyFeedback submits ERC-8004 reputation feedback for all bounty participants.
+// Used by both the deadline watcher (onSettleBounty) and the bounty_settled event handler.
+func (s *Server) submitBountyFeedback(bountyID *big.Int, state *bounty.BountyState, evals map[string]*match.ParticipantEvaluation) {
 	go func() {
 		if !s.chainClient.HasReputationContracts() {
 			return
@@ -1275,10 +1312,9 @@ func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
 		defer cancel()
 
 		for participant, eval := range evals {
-			// TODO: resolve wallet address -> agentId via indexer or local cache.
-			agentId, ok := new(big.Int).SetString(participant[2:], 16)
-			if !ok {
-				log.Printf("Bounty %s: failed to parse participant address %s as agentId", bountyID, participant)
+			agentId, ok := state.GetAgentID(participant)
+			if !ok || agentId == nil {
+				log.Printf("Bounty %s: no agentId stored for %s, skipping feedback", bountyID, participant)
 				continue
 			}
 
@@ -1288,13 +1324,10 @@ func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
 			var feedbackHash [32]byte
 
 			if err := s.chainClient.GiveFeedback(fbCtx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
-				log.Printf("Bounty %s: failed to give feedback for %s: %v", bountyID, participant, err)
+				log.Printf("Bounty %s: failed to give feedback for %s (agentId=%s): %v", bountyID, participant, agentId, err)
 				continue
 			}
-			log.Printf("Bounty %s: submitted ERC-8004 feedback for %s (score=%d)", bountyID, participant, eval.TotalScore)
+			log.Printf("Bounty %s: submitted ERC-8004 feedback for %s (agentId=%s, score=%d)", bountyID, participant, agentId, eval.TotalScore)
 		}
 	}()
-
-	s.bountyManager.RemoveBounty(bountyID)
-	return nil
 }
