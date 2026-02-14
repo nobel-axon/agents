@@ -258,8 +258,12 @@ func (s *Server) handleEvent(c *gin.Context) {
 		log.Printf("POST /event: bounty_settled bounty %d", req.MatchID)
 		if state, err := s.bountyManager.GetBounty(matchID); err == nil {
 			evals := state.GetAllEvaluations()
+			var winner common.Address
+			if winnerStr, ok := req.Data["winnerAddr"].(string); ok && winnerStr != "" {
+				winner = common.HexToAddress(winnerStr)
+			}
 			if len(evals) > 0 {
-				s.submitBountyFeedback(matchID, state, evals)
+				s.submitBountyFeedback(matchID, state, evals, winner)
 			}
 		}
 		s.bountyManager.RemoveBounty(matchID)
@@ -1366,38 +1370,47 @@ func (s *Server) onSettleBounty(ctx context.Context, bountyID *big.Int) error {
 	// Settlement (pickWinner) is the creator's responsibility — Chief only submits reputation feedback
 	log.Printf("Bounty %s: best answer from %s (score: %d), submitting reputation feedback", bountyID, winner.Hex(), highestScore)
 
-	s.submitBountyFeedback(bountyID, state, evals)
+	s.submitBountyFeedback(bountyID, state, evals, winner)
 	s.bountyManager.RemoveBounty(bountyID)
 	return nil
 }
 
-// submitBountyFeedback submits ERC-8004 reputation feedback for all bounty participants.
+// submitBountyFeedback submits ERC-8004 reputation feedback for the bounty winner only.
 // Used by both the deadline watcher (onSettleBounty) and the bounty_settled event handler.
-func (s *Server) submitBountyFeedback(bountyID *big.Int, state *bounty.BountyState, evals map[string]*match.ParticipantEvaluation) {
+func (s *Server) submitBountyFeedback(bountyID *big.Int, state *bounty.BountyState, evals map[string]*match.ParticipantEvaluation, winner common.Address) {
 	go func() {
 		if !s.chainClient.HasReputationContracts() {
+			return
+		}
+		if winner == (common.Address{}) {
+			log.Printf("Bounty %s: reputation feedback skipped (no winner)", bountyID)
 			return
 		}
 		fbCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer cancel()
 
-		for participant, eval := range evals {
-			agentId, ok := state.GetAgentID(participant)
-			if !ok || agentId == nil {
-				log.Printf("Bounty %s: no agentId stored for %s, skipping feedback", bountyID, participant)
-				continue
-			}
-
-			score := big.NewInt(int64(eval.TotalScore))
-			tag1 := "axon-arena"
-			tag2 := fmt.Sprintf("bounty:%s", bountyID)
-			var feedbackHash [32]byte
-
-			if err := s.chainClient.GiveFeedback(fbCtx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
-				log.Printf("Bounty %s: failed to give feedback for %s (agentId=%s): %v", bountyID, participant, agentId, err)
-				continue
-			}
-			log.Printf("Bounty %s: submitted ERC-8004 feedback for %s (agentId=%s, score=%d)", bountyID, participant, agentId, eval.TotalScore)
+		winnerHex := strings.ToLower(winner.Hex())
+		eval, ok := evals[winnerHex]
+		if !ok {
+			log.Printf("Bounty %s: reputation feedback skipped (no evaluation for winner %s)", bountyID, winnerHex)
+			return
 		}
+
+		agentId, ok := state.GetAgentID(winnerHex)
+		if !ok || agentId == nil {
+			log.Printf("Bounty %s: no agentId stored for winner %s, skipping feedback", bountyID, winnerHex)
+			return
+		}
+
+		score := big.NewInt(int64(eval.TotalScore))
+		tag1 := "axon-arena"
+		tag2 := fmt.Sprintf("bounty:%s", bountyID)
+		var feedbackHash [32]byte
+
+		if err := s.chainClient.GiveFeedback(fbCtx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
+			log.Printf("Bounty %s: failed to give feedback for winner %s (agentId=%s, score=%d): %v", bountyID, winnerHex, agentId, eval.TotalScore, err)
+			return
+		}
+		log.Printf("Bounty %s: submitted ERC-8004 feedback for winner %s (agentId=%s, score=%d)", bountyID, winnerHex, agentId, eval.TotalScore)
 	}()
 }

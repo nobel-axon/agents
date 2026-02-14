@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"math/big"
+	"strings"
 	"sync"
 	"time"
 
@@ -571,7 +572,7 @@ func (s *Server) revealAnswer(ctx context.Context, matchID *big.Int, state *matc
 	}
 }
 
-// submitReputationFeedback submits ERC-8004 reputation feedback for all match participants.
+// submitReputationFeedback submits ERC-8004 reputation feedback for the match winner only.
 // Runs as an async goroutine — errors are logged but do not block settlement.
 func (s *Server) submitReputationFeedback(matchID *big.Int) {
 	if !s.chainClient.HasReputationContracts() {
@@ -587,35 +588,39 @@ func (s *Server) submitReputationFeedback(matchID *big.Int) {
 		return
 	}
 
-	evals := state.GetAllEvaluations()
-	if len(evals) == 0 {
-		log.Printf("Match %s: reputation feedback skipped (no evaluations)", matchID)
+	winner := state.GetWinner()
+	if winner == (common.Address{}) {
+		log.Printf("Match %s: reputation feedback skipped (no winner)", matchID)
 		return
 	}
 
-	for participant, eval := range evals {
-		// Look up agentId from stored wallet→agentId mapping
-		agentId, ok := state.GetAgentID(participant)
-		if !ok || agentId == nil {
-			log.Printf("Match %s: no agentId stored for %s, skipping feedback", matchID, participant)
-			continue
-		}
+	evals := state.GetAllEvaluations()
+	winnerHex := strings.ToLower(winner.Hex())
+	eval, ok := evals[winnerHex]
+	if !ok {
+		log.Printf("Match %s: reputation feedback skipped (no evaluation for winner %s)", matchID, winnerHex)
+		return
+	}
 
-		score := big.NewInt(int64(eval.TotalScore))
-		tag1 := "axon-arena"
-		tag2 := fmt.Sprintf("match:%s", matchID)
-		var feedbackHash [32]byte
+	agentId, ok := state.GetAgentID(winnerHex)
+	if !ok || agentId == nil {
+		log.Printf("Match %s: no agentId stored for winner %s, skipping feedback", matchID, winnerHex)
+		return
+	}
 
-		if err := s.chainClient.GiveFeedback(ctx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
-			log.Printf("Match %s: failed to give feedback for %s (agentId=%s, score=%d): %v", matchID, participant, agentId, eval.TotalScore, err)
-			continue
-		}
-		log.Printf("Match %s: submitted ERC-8004 feedback for %s (agentId=%s, score=%d)", matchID, participant, agentId, eval.TotalScore)
+	score := big.NewInt(int64(eval.TotalScore))
+	tag1 := "axon-arena"
+	tag2 := fmt.Sprintf("match:%s", matchID)
+	var feedbackHash [32]byte
 
-		// Report reputation update to server
-		if s.reporter != nil {
-			go s.reporter.ReportReputationUpdate(context.Background(), participant, eval.TotalScore)
-		}
+	if err := s.chainClient.GiveFeedback(ctx, agentId, score, 0, tag1, tag2, "", "", feedbackHash); err != nil {
+		log.Printf("Match %s: failed to give feedback for winner %s (agentId=%s, score=%d): %v", matchID, winnerHex, agentId, eval.TotalScore, err)
+		return
+	}
+	log.Printf("Match %s: submitted ERC-8004 feedback for winner %s (agentId=%s, score=%d)", matchID, winnerHex, agentId, eval.TotalScore)
+
+	if s.reporter != nil {
+		go s.reporter.ReportReputationUpdate(context.Background(), winnerHex, eval.TotalScore)
 	}
 }
 
