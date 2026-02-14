@@ -9,6 +9,7 @@ import (
 	"log"
 	"math/big"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -1101,9 +1102,9 @@ func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, dat
 	chainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// Screen the question before approving
+	// Screen the question before approving — basic spam filter
 	if err := bounty.ValidateQuestion(question); err != nil {
-		log.Printf("Bounty %s: question rejected: %v", bountyID, err)
+		log.Printf("Bounty %s: question rejected (basic): %v", bountyID, err)
 		if rejectErr := s.chainClient.RejectBounty(chainCtx, bountyID, err.Error()); rejectErr != nil {
 			log.Printf("Bounty %s: failed to reject on-chain: %v", bountyID, rejectErr)
 			// Leave bounty in memory — rejection will be retried on next event
@@ -1113,7 +1114,27 @@ func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, dat
 		return nil
 	}
 
-	// Question passed screening — approve on-chain
+	// LLM-based safety screening via judge consensus
+	screenResult, screenErr := s.judgeCoordinator.ValidateQuestionWithConsensus(
+		chainCtx, "bounty-"+bountyID.String(), question, "", category, int(difficulty),
+	)
+	if screenErr != nil {
+		log.Printf("Bounty %s: LLM screening failed: %v (approving anyway)", bountyID, screenErr)
+	} else if !screenResult.Valid {
+		reason := "Question flagged as unsafe by AI screening"
+		if len(screenResult.Issues) > 0 {
+			reason = strings.Join(screenResult.Issues, "; ")
+		}
+		log.Printf("Bounty %s: question rejected (LLM): %s", bountyID, reason)
+		if rejectErr := s.chainClient.RejectBounty(chainCtx, bountyID, reason); rejectErr != nil {
+			log.Printf("Bounty %s: failed to reject on-chain: %v", bountyID, rejectErr)
+			return fmt.Errorf("reject bounty on-chain: %w", rejectErr)
+		}
+		s.bountyManager.RemoveBounty(bountyID)
+		return nil
+	}
+
+	// Question passed all screening — approve on-chain
 	if err := s.chainClient.ApproveBounty(chainCtx, bountyID); err != nil {
 		return fmt.Errorf("approve bounty on-chain: %w", err)
 	}
