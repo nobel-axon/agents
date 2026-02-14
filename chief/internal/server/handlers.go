@@ -573,11 +573,20 @@ func (s *Server) handleQuestionGenerated(ctx context.Context, matchID *big.Int, 
 // It constructs a ChainEvent and routes it through onChainEvent for grace period + auto-start logic.
 func (s *Server) handleAgentJoinedQueueEvent(ctx context.Context, matchID *big.Int, data map[string]interface{}) {
 	agentStr, _ := data["agent"].(string)
+	agentIdFloat, _ := data["agentId"].(float64)
 	playerCount, _ := data["playerCount"].(float64)
 	txHash, _ := data["txHash"].(string)
 
-	log.Printf("Match %s: agent_joined_queue event from server — agent=%s playerCount=%d",
-		matchID, agentStr, int(playerCount))
+	log.Printf("Match %s: agent_joined_queue event from server — agent=%s agentId=%d playerCount=%d",
+		matchID, agentStr, int64(agentIdFloat), int(playerCount))
+
+	// Store wallet → agentId mapping for reputation feedback after settlement
+	if agentIdFloat > 0 && agentStr != "" {
+		if state, err := s.matchManager.GetMatch(matchID); err == nil && state != nil {
+			state.SetAgentID(agentStr, big.NewInt(int64(agentIdFloat)))
+			log.Printf("Match %s: stored agentId=%d for %s", matchID, int64(agentIdFloat), agentStr)
+		}
+	}
 
 	event := &watcher.ChainEvent{
 		Type:    watcher.EventAgentJoinedQueue,
