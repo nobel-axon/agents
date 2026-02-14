@@ -155,11 +155,12 @@ func (r *Reporter) ReportAnswerSubmitted(ctx context.Context, req AnswerSubmitte
 
 // BountyAnswerResultRequest is the request for recording bounty answer evaluation results.
 type BountyAnswerResultRequest struct {
-	BountyID    int64           `json:"bountyId"`
-	AgentAddr   string          `json:"agentAddr"`
-	TotalScore  int             `json:"totalScore"`
-	Agreement   string          `json:"agreement"`
-	Evaluations json.RawMessage `json:"evaluations,omitempty"`
+	BountyID      int64           `json:"bountyId"`
+	AgentAddr     string          `json:"agentAddr"`
+	AttemptNumber int             `json:"attemptNumber"`
+	TotalScore    int             `json:"totalScore"`
+	Agreement     string          `json:"agreement"`
+	Evaluations   json.RawMessage `json:"evaluations,omitempty"`
 }
 
 // ReportBountyAnswerResult sends a bounty answer evaluation result to the server.

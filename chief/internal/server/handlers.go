@@ -1189,6 +1189,7 @@ func (s *Server) handleBountyAnswerSubmitted(ctx context.Context, bountyID *big.
 	agentStr, _ := data["agent"].(string)
 	answer, _ := data["answer"].(string)
 	reasoning, _ := data["reasoning"].(string)
+	attemptNumber, _ := data["attemptNumber"].(float64)
 	txHash, _ := data["txHash"].(string)
 
 	// Idempotency check — prevent duplicate evaluation on event replay
@@ -1295,11 +1296,12 @@ func (s *Server) handleBountyAnswerSubmitted(ctx context.Context, bountyID *big.
 			evalsJSON, _ = json.Marshal(judgeResults)
 		}
 		go s.reporter.ReportBountyAnswerResult(context.Background(), reporter.BountyAnswerResultRequest{
-			BountyID:    bountyID.Int64(),
-			AgentAddr:   agentStr,
-			TotalScore:  panelResult.AverageScore,
-			Agreement:   panelResult.Agreement,
-			Evaluations: evalsJSON,
+			BountyID:      bountyID.Int64(),
+			AgentAddr:     agentStr,
+			AttemptNumber: int(attemptNumber),
+			TotalScore:    panelResult.AverageScore,
+			Agreement:     panelResult.Agreement,
+			Evaluations:   evalsJSON,
 		})
 	}()
 
