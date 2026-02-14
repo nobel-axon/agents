@@ -843,6 +843,36 @@ func (c *ChainClient) PickWinner(ctx context.Context, bountyID *big.Int, winner 
 	return tx.Hash().Hex(), nil
 }
 
+// ApproveBounty transitions a bounty from Pending to Active on-chain.
+func (c *ChainClient) ApproveBounty(ctx context.Context, bountyID *big.Int) error {
+	if c.bountyArena == nil {
+		return errors.New("BountyArena not configured")
+	}
+	label := fmt.Sprintf("Bounty %s: approveBounty", bountyID)
+	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.bountyArena.ApproveBounty(opts, bountyID)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to approve bounty: %w", err)
+	}
+	return nil
+}
+
+// RejectBounty rejects a pending bounty and refunds the creator on-chain.
+func (c *ChainClient) RejectBounty(ctx context.Context, bountyID *big.Int, reason string) error {
+	if c.bountyArena == nil {
+		return errors.New("BountyArena not configured")
+	}
+	label := fmt.Sprintf("Bounty %s: rejectBounty", bountyID)
+	_, err := c.sendTxWithRetry(ctx, label, func(opts *bind.TransactOpts) (*types.Transaction, error) {
+		return c.bountyArena.RejectBounty(opts, bountyID, reason)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to reject bounty: %w", err)
+	}
+	return nil
+}
+
 // sendTxWithRetryValue sends a transaction with value and retries.
 // It holds txMu for the entire lifecycle to prevent nonce race conditions.
 func (c *ChainClient) sendTxWithRetryValue(ctx context.Context, label string, value *big.Int, txFunc func(*bind.TransactOpts) (*types.Transaction, error)) (*types.Transaction, error) {

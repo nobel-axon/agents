@@ -16,12 +16,15 @@ import (
 type Phase int
 
 const (
-	PhaseActive Phase = iota
+	PhasePending Phase = iota
+	PhaseActive
 	PhaseSettled
 )
 
 func (p Phase) String() string {
 	switch p {
+	case PhasePending:
+		return "pending"
 	case PhaseActive:
 		return "active"
 	case PhaseSettled:
@@ -72,7 +75,7 @@ func NewBountyState(id *big.Int, creator common.Address, question, category stri
 		Deadline:        deadline,
 		MaxParticipants: maxParticipants,
 		MinRating:       minRating,
-		Phase:           PhaseActive,
+		Phase:           PhasePending,
 		Players:         make([]common.Address, 0),
 		AgentIDs:        make(map[string]*big.Int),
 		Evaluations:     make(map[string]*match.ParticipantEvaluation),
@@ -194,14 +197,14 @@ func (m *Manager) RemoveBounty(bountyID *big.Int) {
 	delete(m.bounties, bountyID.String())
 }
 
-// GetActiveBounties returns all non-terminal bounties.
+// GetActiveBounties returns all non-terminal bounties (Pending or Active).
 func (m *Manager) GetActiveBounties() []*BountyState {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	var active []*BountyState
 	for _, b := range m.bounties {
-		if b.Phase == PhaseActive {
+		if b.Phase == PhasePending || b.Phase == PhaseActive {
 			active = append(active, b)
 		}
 	}

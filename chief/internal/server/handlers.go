@@ -267,6 +267,10 @@ func (s *Server) handleEvent(c *gin.Context) {
 		// Claim event — informational, no action needed from chief
 		log.Printf("POST /event: bounty_claim bounty %d", req.MatchID)
 
+	case "answer_timeout":
+		// Answer timeout — informational. Chief uses internal TimeoutWatcher.
+		log.Printf("POST /event: answer_timeout for match %d (handled by TimeoutWatcher)", req.MatchID)
+
 	default:
 		log.Printf("POST /event: unknown event type %q for match %d", req.Type, req.MatchID)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unknown event type"})
@@ -1041,6 +1045,17 @@ func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, dat
 		return nil
 	}
 
+	// Idempotency — skip if we already have this bounty (but allow retry if still pending)
+	if existing, err := s.bountyManager.GetBounty(bountyID); err == nil && existing != nil {
+		if existing.Phase != bounty.PhasePending {
+			log.Printf("Bounty %s: already tracked (phase=%s), skipping duplicate bounty_created", bountyID, existing.Phase)
+			return nil
+		}
+		// Phase is still pending — previous approve/reject may have failed. Remove stale state and reprocess.
+		log.Printf("Bounty %s: found in pending state, removing stale entry and reprocessing", bountyID)
+		s.bountyManager.RemoveBounty(bountyID)
+	}
+
 	creatorStr, _ := data["creator"].(string)
 	question, _ := data["question"].(string)
 	category, _ := data["category"].(string)
@@ -1072,6 +1087,29 @@ func (s *Server) handleBountyCreated(ctx context.Context, bountyID *big.Int, dat
 	}
 
 	log.Printf("Bounty %s: registered (question=%q, category=%s, deadline=%v)", bountyID, question, category, deadline)
+
+	// Use a detached context for chain TX calls — HTTP request context may timeout
+	chainCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	// Screen the question before approving
+	if err := bounty.ValidateQuestion(question); err != nil {
+		log.Printf("Bounty %s: question rejected: %v", bountyID, err)
+		if rejectErr := s.chainClient.RejectBounty(chainCtx, bountyID, err.Error()); rejectErr != nil {
+			log.Printf("Bounty %s: failed to reject on-chain: %v", bountyID, rejectErr)
+			// Leave bounty in memory — rejection will be retried on next event
+			return fmt.Errorf("reject bounty on-chain: %w", rejectErr)
+		}
+		s.bountyManager.RemoveBounty(bountyID)
+		return nil
+	}
+
+	// Question passed screening — approve on-chain
+	if err := s.chainClient.ApproveBounty(chainCtx, bountyID); err != nil {
+		return fmt.Errorf("approve bounty on-chain: %w", err)
+	}
+	state.Phase = bounty.PhaseActive
+	log.Printf("Bounty %s: approved on-chain", bountyID)
 
 	// Generate judge personalities for this bounty (same logic as matches)
 	go func() {
